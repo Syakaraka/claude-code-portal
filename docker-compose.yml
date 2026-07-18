@@ -1,0 +1,85 @@
+# docker compose for Claude Code
+#
+# Quick start:
+#   1. cp .env.example .env  &&  edit .env (verify UID/GID match your host user)
+#   2. docker compose build
+#   3. docker compose run --rm claude
+#
+# Authentication is reused from the host automatically: the entire ~ is
+# bind-mounted into /home/node, so any Claude Code OAuth login you've
+# already done on the host is picked up. No API key required if you're
+# on Pro/Max — just leave ANTHROPIC_API_KEY blank in .env.
+#
+# To drop into a shell inside the container:
+#   docker compose run --rm --entrypoint bash claude
+#
+# To resume the most recent session explicitly:
+#   docker compose run --rm claude --continue
+
+name: claude-code
+
+services:
+  claude:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # APT mirror — defaults to a Chinese mirror; override to empty for
+        # the upstream deb.debian.org (set APT_MIRROR= in .env or use official:
+        #   APT_MIRROR=
+        #   NPM_REGISTRY=https://registry.npmjs.org/)
+        APT_MIRROR: ${APT_MIRROR:-mirrors.tuna.tsinghua.edu.cn}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com/}
+    image: claude-code:local
+    pull_policy: never
+    container_name: claude-code
+
+    # Interactive TTY — required for Claude Code's UI
+    stdin_open: true
+    tty: true
+    init: true                 # tiny init for proper Ctrl+C / signal forwarding
+
+    working_dir: /workspace
+
+    # Drop privileges to the host UID so bind-mounted files stay owned by you.
+    # (Compose expands ${UID:-1000} from the host env or .env file.)
+    user: "${UID:-1000}:${GID:-1000}"
+
+    environment:
+      # Leave blank to fall back to OAuth login persisted in the volume.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      LD_LIBRARY_PATH: /opt/oracle/instantclient
+      # Optional: forward proxy if your network needs one
+      # HTTP_PROXY:  http://host.docker.internal:7890
+      # HTTPS_PROXY: http://host.docker.internal:7890
+      # NO_PROXY:    localhost,127.0.0.1
+
+    volumes:
+      # Bind-mount the entire host home into /home/node. This single mount
+      # reuses:
+      #   - ~/.claude/         OAuth tokens, settings, session history, plans
+      #   - ~/.claude.json     top-level credentials file (if Claude Code uses it)
+      #   - ~/.gitconfig       git identity for commits
+      #   - ~/.ssh             SSH keys for git push (read by Claude Code as node)
+      #   - any other dotfiles Claude Code or its plugins might look for
+      #
+      # Requirements:
+      #   - `user: "${UID:-1000}:${GID:-1000}"` (already set above) must match
+      #     a host UID that owns (or can read) these files. If you're thomas
+      #     with UID 1000 on the host and the compose file uses 1000:1000,
+      #     you're set — verify with `id -u` / `id -g`.
+      #   - The mount is RW so Claude Code can refresh tokens and append
+      #     sessions. Treat anything inside ~ as in-scope for the container.
+      #   - /workspace below is layered on top — your project files appear
+      #     at /workspace and shadow any host dir of the same name.
+      - ${NODE_HOME}:/root
+      - ${NODE_HOME}/.claude/hooks:/home/node/.claude/hooks:ro
+      - ${ORACLE_INSTANT_DIR:-.}:/opt/oracle/instantclient
+
+      # 1. Project working directory — mounts the directory you ran compose from.
+      #    Change to an absolute path if you want a fixed host location.
+      - ${PROJECT_DIR:-.}:/workspace:ro
+
+      # 2. Optional: corporate / self-signed CA bundle. Uncomment NODE_EXTRA_CA_CERTS
+      #    in the environment block above and mount the bundle here:
+      # - ./certs/ca-bundle.pem:/etc/ssl/certs/custom-ca.pem:ro 
