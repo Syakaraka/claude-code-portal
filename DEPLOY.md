@@ -18,29 +18,50 @@
 
 搬之前先看下面这些点；每项都给出了"在目标机器上怎么对齐"的做法。
 
-### 1.1 宿主用户 uid / gid = 1000:1000
+### 1.1 宿主用户 uid（root / 普通用户都行）
 
-`portal/app.py` 强制 chown 所有用户目录到 `1000:1000`（因为 `claude-code:local`
-镜像里的 `node` 用户就是 uid 1000）。要求：**启动 docker daemon 的那个用户（你）也
-必须是 uid 1000**。
+`portal/app.py` 把所有用户目录 chown 到**数值** uid/gid `1000:1000`
+（对应 `claude-code:local` 镜像里 `/etc/passwd` 的 `node` 用户）。
+Linux inode 上的 uid/gid 是数字，**不依赖用户名**：
 
-验证当前用户：
+- 容器内 `node` (uid 1000) 看到的 inode uid/gid 也是 1000/1000 → 读写正常
+- host 上 `chown 1000:1000` 只设数字，不要求 host 真的有 `uid=1000` 的本地账号
+- 所以 **host 用户是 root / 任意非 1000 的普通用户都能跑**，不需要对齐到 1000
+
+#### 唯一会受 host 用户影响的事
+
+| host 用户 | `ls -l volumes/users/<uid>/` 显示 | 其他 |
+|-----------|------------------------------------|------|
+| uid 1000 用户 | `thomas thomas ...` | 默认开发机场景，最直观 |
+| 其他 uid | `1000 1000 ...` | 纯数字显示，无功能影响 |
+| **root** (uid 0) | `1000 1000 ...` | 同上 |
+
+#### Root 部署（云服务器常见场景）
+
+如果是 root，**直接部署即可**，比文档 §2 的 Step 2 还简单：
 
 ```bash
-id
-# uid=1000(thomas) gid=1000(thomas) ...
+# 不用 usermod（root 不能改 uid，也不需要）
+# 不用 usermod -aG docker（root 默认能跑 docker）
+# 不用 sudo（任何命令前都不需要）
+
+apt update && apt install -y curl git
+curl -fsSL https://get.docker.com | sh
+
+git clone git@github.com:Syakaraka/claude-code-portal.git /root/claude-portal
+cd /root/claude-portal
+cp .env.example .env
+# .env 里 HOST_PROJECT_DIR=/root/claude-portal
+# 后续步骤按 §2 Step 4-7 走
 ```
 
-新机器上如果你的 uid 不是 1000：
+#### 非 1000 的普通用户（root 之外的最常见情况）
 
-- **方案 A（推荐）**：把当前用户改成 uid 1000
-  ```bash
-  sudo usermod -u 1000 $USER
-  sudo groupmod -g 1000 $USER
-  # 注销重登；之后 chown -R 1000:1000 把项目目录属主修正
-  ```
-- **方案 B**：修改镜像里 node 用户的 uid（改 `Dockerfile` + `entrypoint.sh` + `portal/app.py`
-  的 chown 目标）。不推荐，会跟 image 文档不一致。
+```bash
+sudo usermod -aG docker $USER    # 让自己能免 sudo 跑 docker
+# 注销重登让 group 生效
+# 不用改 uid；目录属主是数字 1000，不影响功能
+```
 
 ### 1.2 Linux 宿主机（Debian/Ubuntu 系）
 
@@ -192,30 +213,43 @@ ls -lh vendor/
 
 ### Step 2：在新机器准备环境
 
-```bash
-# 假设新机器用户名是 deployer
-sudo usermod -u 1000 deployer    # 对齐 1.1 的要求
-sudo groupmod -g 1000 deployer
-# 注销重登
+**如果是 root**（云服务器常见）：
 
-# 装 docker（Debian/Ubuntu）
+```bash
+apt update && apt install -y curl git
 curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker deployer  # 免 sudo 跑 docker
+# 不用加 docker group（root 默认能跑 docker）
+# 不用改 uid
+
+# 验证
+docker --version
+docker compose version
+docker ps          # 不报权限错即可
+```
+
+**如果是普通用户**（假设用户名是 `deployer`）：
+
+```bash
+# 装 docker
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker deployer  # 让自己能免 sudo 跑 docker
 # 注销重登让 group 生效
 
 # 验证
-id                  # uid=1000 ...
+id
 docker --version
 docker compose version
-docker ps           # 不报权限错即可
+docker ps          # 不报权限错即可
+# uid 可以是任意值，不必是 1000（详见 §1.1）
 ```
 
 ### Step 3：放置项目到目标路径
 
 ```bash
-# 新机器上你想要的部署路径（必须是 uid 1000 用户可写的）
-mkdir -p /home/deployer/claude-portal
-cd /home/deployer/claude-portal
+# 新机器上你想要的部署路径（root 就放 /root，普通用户就放 /home/$USER）
+mkdir -p /root/claude-portal      # root
+# 或 mkdir -p /home/deployer/claude-portal  # 普通用户
+cd /root/claude-portal             # 或对应路径
 
 # 解包
 tar xzf /path/to/claude-portal-src.tar.gz
@@ -224,8 +258,10 @@ tar xzf /path/to/vendor.tar.gz
 tar xzf /path/to/ca-bundle.tar.gz
 tar xzf /path/to/user-data.tar.gz
 
-# 修正属主（以防 tar 带过来的属主是旧机器的 uid）
-sudo chown -R 1000:1000 /home/deployer/claude-portal
+# 修正属主（仅当从其他机器迁移过来且 tar 里带了原始 uid 时需要）
+# root 解包：通常文件已经是 root 拥有，可跳过
+# 普通用户解包：sudo chown -R $USER:$USER /home/deployer/claude-portal
+# （后续 portal/app.py 会把 users/<uid>/ 内部 chown 到数值 1000:1000，跟宿主机谁拥有项目目录无关）
 ```
 
 ### Step 4：写 .env
