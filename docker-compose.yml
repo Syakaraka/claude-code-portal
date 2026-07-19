@@ -1,85 +1,57 @@
-# docker compose for Claude Code
-#
-# Quick start:
-#   1. cp .env.example .env  &&  edit .env (verify UID/GID match your host user)
-#   2. docker compose build
-#   3. docker compose run --rm claude
-#
-# Authentication is reused from the host automatically: the entire ~ is
-# bind-mounted into /home/node, so any Claude Code OAuth login you've
-# already done on the host is picked up. No API key required if you're
-# on Pro/Max — just leave ANTHROPIC_API_KEY blank in .env.
-#
-# To drop into a shell inside the container:
-#   docker compose run --rm --entrypoint bash claude
-#
-# To resume the most recent session explicitly:
-#   docker compose run --rm claude --continue
-
 name: claude-code
 
+# =============================================================
+# Phase 1 多用户架构
+# =============================================================
+# 本 compose 文件只跑 portal。claude-code:local 镜像由 portal 动态拉起。
+#
+# 启动顺序（首次）：
+#   1. 复制 .env.example 为 .env，按需修改（端口 / 路径）
+#   2. docker build . -t claude-code:local        # 构建 claude-code 镜像
+#   3. docker compose build                       # 构建 portal 镜像
+#   4. docker compose up -d                       # 启动 portal
+#
+# 用户访问流程：浏览器 → http://server:${PORTAL_HOST_PORT}/ → portal → 填表 →
+#              portal 拉起 claude-<uid> 容器 → 重定向到 http://server:${CLAUDE_PORT_MIN..MAX}/
+#
+# 全部路径 / 端口 / 镜像名由 .env 控制；详见 .env.example + ARCHITECTURE.md §15
+# =============================================================
+
 services:
-  claude:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        # APT mirror — defaults to a Chinese mirror; override to empty for
-        # the upstream deb.debian.org (set APT_MIRROR= in .env or use official:
-        #   APT_MIRROR=
-        #   NPM_REGISTRY=https://registry.npmjs.org/)
-        APT_MIRROR: ${APT_MIRROR:-mirrors.tuna.tsinghua.edu.cn}
-        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com/}
-    image: claude-code:local
+  portal:
+    build: ./portal
+    image: claude-portal:local
+    container_name: claude-portal
     pull_policy: never
-    container_name: claude-code
 
-    # Interactive TTY — required for Claude Code's UI
-    stdin_open: true
-    tty: true
-    init: true                 # tiny init for proper Ctrl+C / signal forwarding
+    # 主入口：用户在浏览器访问这个端口
+    # HOST_PORT 与 CONTAINER_PORT 都从 .env 读，默认 9900
+    # 如果改了 PORTAL_HOST_PORT 但没改 PORTAL_CONTAINER_PORT，portal/Dockerfile 要
+    # 同步重建（gunicorn 绑 CONTAINER_PORT），否则端口不一致
+    ports:
+      - "${PORTAL_HOST_PORT:-9900}:${PORTAL_CONTAINER_PORT:-9900}"
 
-    working_dir: /workspace
-
-    # Drop privileges to the host UID so bind-mounted files stay owned by you.
-    # (Compose expands ${UID:-1000} from the host env or .env file.)
-    user: "${UID:-1000}:${GID:-1000}"
-
-    environment:
-      # Leave blank to fall back to OAuth login persisted in the volume.
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      LD_LIBRARY_PATH: /opt/oracle/instantclient
-      # Optional: forward proxy if your network needs one
-      # HTTP_PROXY:  http://host.docker.internal:7890
-      # HTTPS_PROXY: http://host.docker.internal:7890
-      # NO_PROXY:    localhost,127.0.0.1
+    # 关键：让 portal 容器能控制宿主机上的 Docker（启动/停止 claude 容器）
+    # 注意 docker.run() 的 bind source 必须是 host 上的真实绝对路径，
+    # 而不能是 portal 容器内的 /volumes/...（docker daemon 解析不到）
+    # 所以 portal 通过 HOST_PROJECT_DIR 等 env 拿到 host 上项目目录的绝对路径
+    # 详见 portal/app.py 常量段 + ARCHITECTURE.md §5.2 / §15
+    env_file:
+      - .env
 
     volumes:
-      # Bind-mount the entire host home into /home/node. This single mount
-      # reuses:
-      #   - ~/.claude/         OAuth tokens, settings, session history, plans
-      #   - ~/.claude.json     top-level credentials file (if Claude Code uses it)
-      #   - ~/.gitconfig       git identity for commits
-      #   - ~/.ssh             SSH keys for git push (read by Claude Code as node)
-      #   - any other dotfiles Claude Code or its plugins might look for
-      #
-      # Requirements:
-      #   - `user: "${UID:-1000}:${GID:-1000}"` (already set above) must match
-      #     a host UID that owns (or can read) these files. If you're thomas
-      #     with UID 1000 on the host and the compose file uses 1000:1000,
-      #     you're set — verify with `id -u` / `id -g`.
-      #   - The mount is RW so Claude Code can refresh tokens and append
-      #     sessions. Treat anything inside ~ as in-scope for the container.
-      #   - /workspace below is layered on top — your project files appear
-      #     at /workspace and shadow any host dir of the same name.
-      - ${NODE_HOME}:/root
-      - ${NODE_HOME}/.claude/hooks:/home/node/.claude/hooks:ro
-      - ${ORACLE_INSTANT_DIR:-.}:/opt/oracle/instantclient
+      # Docker socket 路径可配置（macOS / 自定义 docker 路径场景）
+      - ${HOST_DOCKER_SOCK:-/var/run/docker.sock}:${HOST_DOCKER_SOCK:-/var/run/docker.sock}
 
-      # 1. Project working directory — mounts the directory you ran compose from.
-      #    Change to an absolute path if you want a fixed host location.
-      - ${PROJECT_DIR:-.}:/workspace:ro
+      # 项目本地 volumes 挂到 portal 容器内的 /volumes（仅供 portal 通过
+      # shutil/os 操作读取 volumes/code、volumes/node 模板，写入 volumes/users）
+      # 真正传给 docker.run() 的 bind source 用 HOST_USERS_DIR / HOST_CODE_DIR 等
+      # host 绝对路径（见 app.py），保证 docker daemon 解析到正确的 host 位置
+      - ${HOST_VOLUMES_DIR}:${PORTAL_VOLUMES_MOUNT:-/volumes}
 
-      # 2. Optional: corporate / self-signed CA bundle. Uncomment NODE_EXTRA_CA_CERTS
-      #    in the environment block above and mount the bundle here:
-      # - ./certs/ca-bundle.pem:/etc/ssl/certs/custom-ca.pem:ro 
+      # Oracle Instant Client（claude 容器需要 libaio1 + 这个路径）
+      # host 路径（HOST_ORACLE_LIB_PATH，默认 /usr/lib/oracle/21/client64/lib）→
+      # 容器内路径（CLAUDE_ORACLE_BIND，默认 /opt/oracle/instantclient）
+      - ${HOST_ORACLE_LIB_PATH:-/usr/lib/oracle/21/client64/lib}:${CLAUDE_ORACLE_BIND:-/opt/oracle/instantclient}:ro
+
+    restart: unless-stopped

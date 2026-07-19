@@ -1,0 +1,891 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Claude Code · Portal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* =============================================================================
+   Claude Code Portal — workshop ticket / engineering waybill
+   =============================================================================
+   token system:
+     paper #FAFAF7 · ink #111418 · mid #4A5260 · muted #6B7280 · hairline #DDD9CF
+     cobalt #1A4FDB (signal) · jade #15803D (live) · rust #C2410C (warn) · crimson #B91C1C (err)
+   type:
+     JetBrains Mono — labels, ticket strip, status, password, port, code
+     IBM Plex Sans — body, paragraphs, buttons
+   signature:
+     TICKET #XXXX header strip with cobalt status dot (persistent across both steps)
+*/
+:root {
+    --paper:    #FAFAF7;
+    --surface:  #FFFFFF;
+    --ink:      #111418;
+    --mid:      #4A5260;
+    --muted:    #6B7280;
+    --hairline: #DDD9CF;
+    --hairline-strong: #C9C4B6;
+    --cobalt:   #1A4FDB;
+    --cobalt-2: #163DAE;
+    --jade:     #15803D;
+    --rust:     #C2410C;
+    --crimson:  #B91C1C;
+    --warn-bg:  #FFF8E1;
+    --warn-bd:  #F0D58A;
+
+    --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "PingFang SC",
+            "Microsoft YaHei", "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", Consolas, "Courier New", monospace;
+
+    --r-sm: 2px;
+    --r-md: 4px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+/* ---------------- ticket strip (signature element) ---------------- */
+.ticket-strip {
+    background: var(--surface);
+    border-bottom: 1px solid var(--hairline);
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--mid);
+}
+.ticket-strip .left,
+.ticket-strip .right { display: flex; align-items: center; gap: 14px; }
+.ticket-strip .mono-block { font-weight: 600; color: var(--ink); }
+.ticket-strip .sep { color: var(--hairline-strong); }
+.ticket-strip .ticket-name {
+    color: var(--ink);
+    font-weight: 500;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ticket-strip .admin-link {
+    color: var(--mid);
+    text-decoration: none;
+    border-bottom: 1px solid var(--hairline);
+    padding-bottom: 1px;
+}
+.ticket-strip .admin-link:hover { color: var(--ink); border-color: var(--ink); }
+.status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--mid);
+}
+.status-pill .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--hairline-strong);
+    box-shadow: 0 0 0 0 transparent;
+}
+.status-pill.is-ready   .dot { background: var(--jade);   animation: pulse 1.8s ease-out infinite; }
+.status-pill.is-working .dot { background: var(--cobalt); animation: pulse 1.2s ease-out infinite; }
+.status-pill.is-error   .dot { background: var(--crimson); }
+.status-pill.is-warn    .dot { background: var(--rust); }
+@keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
+    70%  { box-shadow: 0 0 0 6px transparent; opacity: 0.7; }
+    100% { box-shadow: 0 0 0 0 transparent; opacity: 1; }
+}
+
+/* ---------------- main canvas ---------------- */
+.canvas {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 36px 20px 60px;
+}
+.workorder {
+    width: 100%;
+    max-width: 580px;
+}
+
+/* ---------------- step rail ---------------- */
+.step-rail {
+    display: flex;
+    align-items: baseline;
+    gap: 18px;
+    margin-bottom: 14px;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--hairline-strong);
+}
+.step-rail .step { display: inline-flex; align-items: baseline; gap: 6px; }
+.step-rail .step .num { font-weight: 600; }
+.step-rail .step.is-active { color: var(--ink); }
+.step-rail .step .label { color: var(--mid); }
+.step-rail .step.is-active .label { color: var(--ink); }
+.step-rail .sep { flex: 1; height: 1px; background: var(--hairline); transform: translateY(-3px); }
+
+/* ---------------- card ---------------- */
+.card {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-md);
+    padding: 28px 28px 24px;
+}
+.card-title {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--mid);
+    margin-bottom: 4px;
+}
+.card-h1 {
+    font-family: var(--mono);
+    font-size: 19px;
+    font-weight: 600;
+    color: var(--ink);
+    margin-bottom: 8px;
+    line-height: 1.3;
+}
+.card-sub {
+    color: var(--mid);
+    font-size: 13px;
+    margin-bottom: 22px;
+    line-height: 1.55;
+}
+
+/* ---------------- form ---------------- */
+.field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.field-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--mid);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.field-hint { color: var(--muted); font-size: 11px; font-family: var(--mono); text-transform: none; letter-spacing: 0; }
+.field input {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--hairline-strong);
+    border-radius: var(--r-sm);
+    padding: 10px 12px;
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 13px;
+    transition: border-color 0.12s, background 0.12s;
+}
+.field input::placeholder { color: var(--muted); font-family: var(--mono); }
+.field input:focus {
+    outline: none;
+    border-color: var(--cobalt);
+    background: #FCFCFA;
+    box-shadow: 0 0 0 3px rgba(26, 79, 219, 0.12);
+}
+.field input:disabled { background: var(--paper); color: var(--muted); cursor: not-allowed; }
+
+.field-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+.field-row .field { margin-bottom: 14px; }
+
+/* ---------------- buttons ---------------- */
+.actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 18px;
+    align-items: center;
+}
+.btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    border-radius: var(--r-sm);
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: background 0.12s, border-color 0.12s, color 0.12s, opacity 0.12s;
+    text-decoration: none;
+    white-space: nowrap;
+}
+.btn-primary {
+    background: var(--cobalt);
+    color: #fff;
+}
+.btn-primary:hover:not(:disabled) { background: var(--cobalt-2); }
+.btn-primary:disabled { opacity: 0.55; cursor: wait; }
+.btn-ghost {
+    background: transparent;
+    color: var(--mid);
+    border-color: var(--hairline-strong);
+}
+.btn-ghost:hover:not(:disabled) { color: var(--ink); border-color: var(--ink); }
+.btn-ghost:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-link {
+    background: transparent;
+    color: var(--mid);
+    border: none;
+    padding: 4px 0;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    cursor: pointer;
+    border-bottom: 1px solid var(--hairline);
+}
+.btn-link:hover { color: var(--ink); border-color: var(--ink); }
+
+/* ---------------- result panel (step 2) ---------------- */
+.result-url,
+.result-pwd {
+    background: var(--paper);
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-sm);
+    padding: 12px 12px 10px;
+    margin-bottom: 12px;
+}
+.result-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--mid);
+    margin-bottom: 6px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.result-value-row {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+}
+.result-value {
+    flex: 1;
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-sm);
+    padding: 8px 10px;
+    overflow-x: auto;
+    white-space: nowrap;
+    min-width: 0;
+}
+.copy-btn {
+    background: var(--surface);
+    border: 1px solid var(--hairline-strong);
+    color: var(--mid);
+    border-radius: var(--r-sm);
+    padding: 0 12px;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.12s;
+    min-width: 64px;
+}
+.copy-btn:hover { color: var(--ink); border-color: var(--ink); }
+.copy-btn.is-copied { color: var(--jade); border-color: var(--jade); }
+
+.open-row {
+    margin-top: 8px;
+    margin-bottom: 16px;
+    padding: 14px;
+    background: var(--paper);
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-sm);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+.open-row .label-block { display: flex; flex-direction: column; gap: 2px; }
+.open-row .label-block .l1 {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--mid);
+}
+.open-row .label-block .l2 {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--ink);
+}
+.open-row .btn-open {
+    background: var(--cobalt);
+    color: #fff;
+    padding: 10px 18px;
+    font-size: 13px;
+}
+.open-row .btn-open:hover { background: var(--cobalt-2); }
+
+.aux-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-top: 16px;
+    border-top: 1px dashed var(--hairline);
+    gap: 12px;
+}
+
+/* ---------------- rebuild panel ---------------- */
+.rebuild-panel {
+    margin-top: 14px;
+    background: var(--warn-bg);
+    border: 1px solid var(--warn-bd);
+    border-radius: var(--r-sm);
+    padding: 14px 16px;
+    display: none;
+}
+.rebuild-panel.is-open { display: block; }
+.rebuild-panel h4 {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--rust);
+    margin-bottom: 8px;
+}
+.rebuild-panel p { font-size: 12px; color: var(--mid); margin-bottom: 12px; line-height: 1.55; }
+.rebuild-panel .opt {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 6px 0;
+    font-size: 13px;
+    color: var(--ink);
+    cursor: pointer;
+}
+.rebuild-panel .opt input[type="checkbox"] { margin-top: 3px; }
+.rebuild-panel .opt .opt-title { font-weight: 500; }
+.rebuild-panel .opt .opt-desc { color: var(--muted); font-size: 11px; margin-top: 2px; }
+.rebuild-panel .opt-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--warn-bd);
+}
+.rebuild-panel .btn-warn {
+    background: var(--rust);
+    color: #fff;
+    border-color: var(--rust);
+}
+.rebuild-panel .btn-warn:hover:not(:disabled) { background: #9A3509; border-color: #9A3509; }
+
+/* ---------------- rename panel (displayName) ---------------- */
+.rename-panel {
+    margin-top: 14px;
+    background: var(--paper);
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-sm);
+    padding: 14px 16px;
+}
+.rename-panel h4 {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--mid);
+    margin-bottom: 8px;
+}
+.rename-panel p { font-size: 12px; color: var(--mid); margin-bottom: 10px; line-height: 1.55; }
+.rename-panel .opt-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 6px;
+}
+
+/* ---------------- CA banner ---------------- */
+.ca-banner {
+    margin-top: 18px;
+    background: var(--warn-bg);
+    border: 1px solid var(--warn-bd);
+    border-radius: var(--r-sm);
+    padding: 14px 16px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--ink);
+}
+.ca-banner summary {
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+.ca-banner summary::-webkit-details-marker { display: none; }
+.ca-banner .ca-title {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--rust);
+    font-weight: 600;
+}
+.ca-banner .ca-tag {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--mid);
+    border: 1px solid var(--warn-bd);
+    padding: 2px 6px;
+    border-radius: 2px;
+}
+.ca-banner[open] .ca-tag::after { content: " ▴"; }
+.ca-banner:not([open]) .ca-tag::after { content: " ▾"; }
+.ca-banner .ca-body { margin-top: 12px; }
+.ca-banner ol {
+    margin: 8px 0 10px 22px;
+    line-height: 1.65;
+    color: var(--ink);
+}
+.ca-banner ol li { margin-bottom: 6px; }
+.ca-banner a {
+    color: var(--cobalt);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+.ca-banner a:hover { color: var(--cobalt-2); }
+.ca-banner code {
+    font-family: var(--mono);
+    font-size: 11px;
+    background: rgba(194, 65, 12, 0.07);
+    padding: 1px 4px;
+    border-radius: 2px;
+}
+.ca-banner .ca-foot {
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--mid);
+    line-height: 1.55;
+    padding-top: 8px;
+    border-top: 1px dashed var(--warn-bd);
+}
+.ca-banner .ca-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 10px;
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--mid);
+}
+.ca-banner .ca-section-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--mid);
+    margin-bottom: 6px;
+}
+.ca-banner .step-hint {
+    display: block;
+    margin-top: 3px;
+    margin-left: 2px;
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.55;
+}
+.ca-banner .ca-sub {
+    margin: 4px 0 2px 14px;
+    font-size: 12px;
+    color: var(--ink);
+    line-height: 1.6;
+}
+.ca-banner .mono-block {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 11px;
+    background: rgba(17, 20, 24, 0.06);
+    padding: 1px 6px;
+    border-radius: 2px;
+    color: var(--ink);
+    margin: 2px 0;
+}
+.is-ca-done .ca-banner { opacity: 0.55; }
+.is-ca-done .ca-banner .ca-checkbox { display: none; }
+
+/* ---------------- status / errors ---------------- */
+.status {
+    margin-top: 14px;
+    padding: 12px 14px;
+    border-radius: var(--r-sm);
+    font-size: 12px;
+    line-height: 1.55;
+    background: var(--paper);
+    border: 1px solid var(--hairline);
+    color: var(--mid);
+    font-family: var(--mono);
+    display: none;
+}
+.status.is-error   { background: #FEF2F2; border-color: #FCA5A5; color: var(--crimson); }
+.status.is-success { background: #F0FDF4; border-color: #86EFAC; color: var(--jade); }
+.status.is-visible { display: block; }
+
+.spinner {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-right: 6px;
+    vertical-align: -1px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------------- footer ---------------- */
+.foot {
+    border-top: 1px solid var(--hairline);
+    padding: 12px 20px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+/* ---------------- responsive ---------------- */
+@media (max-width: 560px) {
+    .card { padding: 22px 18px 18px; }
+    .field-row { grid-template-columns: 1fr; }
+    .ticket-strip { font-size: 10px; padding: 8px 12px; }
+    .ticket-strip .left .mono-block { display: none; }
+    .open-row { flex-direction: column; align-items: stretch; }
+    .open-row .btn-open { text-align: center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.001ms !important;
+        transition-duration: 0.001ms !important;
+    }
+}
+</style>
+</head>
+<body class="" id="page">
+
+<!-- ticket strip — persistent signature element -->
+<div class="ticket-strip">
+    <div class="left">
+        <span>CLAUDE · CODE</span>
+        <span class="sep">/</span>
+        <span class="mono-block" id="ticket-id">TICKET #—</span>
+        <span class="sep ticket-name-sep" hidden>·</span>
+        <span class="ticket-name" id="ticket-name" hidden></span>
+    </div>
+    <div class="right">
+        <span class="status-pill" id="status-pill">
+            <span class="dot"></span>
+            <span id="status-text">SETUP</span>
+        </span>
+        <a href="/admin" class="admin-link">管理员</a>
+    </div>
+</div>
+
+<div class="canvas">
+    <div class="workorder">
+
+        <!-- step rail -->
+        <div class="step-rail">
+            <span class="step is-active" data-step="1">
+                <span class="num">01</span><span class="label">CREDENTIALS</span>
+            </span>
+            <span class="sep"></span>
+            <span class="step" data-step="2">
+                <span class="num">02</span><span class="label">CONTAINER</span>
+            </span>
+        </div>
+
+        <!-- step 1 — credentials -->
+        <div class="card" id="step-1" data-step="1">
+            <div class="card-title">第 1 步 / 共 2 步</div>
+            <h1 class="card-h1">输入凭据，启动沙箱</h1>
+            <p class="card-sub">
+                每个用户凭据独立沙箱：填 API key 与三个模型名，portal 会分配独立端口，
+                拉起一个隔离的 Code Server 容器。凭据只存在浏览器本地，服务器不持久化完整 key。
+            </p>
+
+            <form id="login-form" autocomplete="off" novalidate>
+                <div class="field">
+                    <div class="field-label">
+                        <span>Base URL</span>
+                        <span class="field-hint">LLM 网关完整地址</span>
+                    </div>
+                    <input name="baseUrl" required placeholder="https://your-llm-gateway.example.com">
+                </div>
+                <div class="field">
+                    <div class="field-label">
+                        <span>API Key</span>
+                        <span class="field-hint">存在本地，不上送</span>
+                    </div>
+                    <input name="apiKey" type="password" required placeholder="sk-ant-...">
+                </div>
+                <div class="field">
+                    <div class="field-label">
+                        <span>显示名称 <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-weight:400">（可选）</span></span>
+                        <span class="field-hint">给管理员识别用，不影响隔离</span>
+                    </div>
+                    <input name="displayName" maxlength="40" placeholder="张伟（产品组）" autocomplete="off">
+                </div>
+                <div class="field-row">
+                    <div class="field">
+                        <div class="field-label"><span>Opus Model</span></div>
+                        <input name="opusModel" required placeholder="claude-opus-4" value="claude-opus-4">
+                    </div>
+                    <div class="field">
+                        <div class="field-label"><span>Sonnet Model</span></div>
+                        <input name="sonnetModel" required placeholder="claude-sonnet-4" value="claude-sonnet-4">
+                    </div>
+                </div>
+                <div class="field">
+                    <div class="field-label">
+                        <span>Haiku Model</span>
+                        <span class="field-hint">也作 ANTHROPIC_MODEL 默认</span>
+                    </div>
+                    <input name="haikuModel" required placeholder="claude-haiku-4" value="claude-haiku-4">
+                </div>
+
+                <div class="actions">
+                    <button type="submit" class="btn btn-primary" id="submit-btn">
+                        <span id="submit-label">启动 / 进入</span>
+                    </button>
+                    <a id="reset-link" class="btn-link" title="清除已保存的凭据">清除凭据</a>
+                </div>
+            </form>
+
+            <div class="status" id="status"></div>
+        </div>
+
+        <!-- step 2 — container -->
+        <div class="card" id="step-2" data-step="2" hidden>
+            <div class="card-title">第 2 步 / 共 2 步</div>
+            <h1 class="card-h1">容器已就绪</h1>
+            <p class="card-sub">
+                新标签页打开 Code Server，粘贴下面密码登录。密码与 user_id 一致，都是
+                <code style="font-family:var(--mono);font-size:11px;background:var(--paper);padding:1px 4px">sha256(apiKey)[:16]</code>
+                的前 16 位 —— 重新输入同一个 apiKey 会得到同样的密码。
+            </p>
+
+            <div class="result-url">
+                <div class="result-label">
+                    <span>URL · NEW TAB</span>
+                </div>
+                <div class="result-value-row">
+                    <div class="result-value" id="result-url">https://—:—/</div>
+                    <button type="button" class="copy-btn" data-copy="result-url">复制</button>
+                </div>
+            </div>
+
+            <div class="result-pwd">
+                <div class="result-label">
+                    <span>PASSWORD</span>
+                    <span class="field-hint">等于 user_id</span>
+                </div>
+                <div class="result-value-row">
+                    <div class="result-value" id="result-password">—</div>
+                    <button type="button" class="copy-btn" data-copy="result-password">复制</button>
+                </div>
+            </div>
+
+            <div class="open-row">
+                <div class="label-block">
+                    <span class="l1">Open Code Server</span>
+                    <span class="l2" id="open-line">https://—:—/</span>
+                </div>
+                <a href="#" class="btn btn-primary btn-open" id="open-link" target="_blank" rel="noopener">打开 ↗</a>
+            </div>
+
+            <div class="aux-row">
+                <button type="button" class="btn-link" id="edit-link">↩ 回到上一步修改凭据</button>
+                <button type="button" class="btn-link" id="rename-toggle">✎ 改名</button>
+                <button type="button" class="btn-link" id="rebuild-toggle">⚠ 重建容器</button>
+            </div>
+
+            <div class="rename-panel" id="rename-panel" hidden>
+                <h4>✎ 修改显示名称</h4>
+                <p>
+                    仅修改管理员面板中你那一行显示的名字，不影响容器或凭据。留空表示未命名（管理员只看到 user_id）。
+                </p>
+                <div class="field" style="margin-bottom:10px">
+                    <input id="rename-input" maxlength="40" placeholder="新的显示名称（留空清空）">
+                </div>
+                <div class="opt-actions">
+                    <button type="button" class="btn btn-primary" id="rename-save">保存</button>
+                    <button type="button" class="btn btn-ghost" id="rename-cancel">取消</button>
+                </div>
+            </div>
+
+            <div class="rebuild-panel" id="rebuild-panel">
+                <h4>⚠ 重建容器</h4>
+                <p>
+                    重建会停止当前容器并以同样的凭据重新启动。可选清空挂载目录的数据：
+                </p>
+                <label class="opt">
+                    <input type="checkbox" id="reset-home">
+                    <span>
+                        <div class="opt-title">重置用户目录</div>
+                        <div class="opt-desc">删除 volumes/users/&lt;uid&gt;/ 全部内容（Code Server 设置、扩展、对话缓存）</div>
+                    </span>
+                </label>
+                <label class="opt">
+                    <input type="checkbox" id="reset-scratch">
+                    <span>
+                        <div class="opt-title">重置临时目录</div>
+                        <div class="opt-desc">删除 volumes/users/&lt;uid&gt;/scratch 全部内容（本次会话的临时文件）</div>
+                    </span>
+                </label>
+                <div class="opt-actions">
+                    <button type="button" class="btn btn-warn" id="rebuild-confirm">立即重建</button>
+                    <button type="button" class="btn btn-ghost" id="rebuild-cancel">取消</button>
+                </div>
+            </div>
+
+            <div class="status" id="status-step2"></div>
+        </div>
+
+        <!-- CA banner — Windows only (按要求只展示 Windows 操作) -->
+        <details class="ca-banner" id="ca-banner">
+            <summary>
+                <span class="ca-title">⚠ 首次使用 · 必须先安装内部 CA 证书</span>
+                <span class="ca-tag">Windows</span>
+            </summary>
+            <div class="ca-body">
+                <p style="margin-bottom:10px;color:var(--mid)">
+                    Code Server 的 Claude Code 扩展依赖浏览器 Service Worker。Chrome 对
+                    Service Worker 的 fetch 严格校验证书，self-signed cert 会被拒（即使主页面
+                    accept 了警告，扩展也无法加载）。Portal 用内部 CA 签发用户证书，你只需把
+                    这张 CA 装到 Windows 信任库一次。证书文件 <code>claude-code-portal-ca.crt</code>
+                    内容是 PEM 文本（后缀名是给 Windows 关联"证书"图标用的）。
+                </p>
+
+                <p class="ca-section-label">安装步骤（Windows 10 / 11）</p>
+                <ol>
+                    <li>
+                        下载 → <a href="/install-cert" download>claude-code-portal-ca.crt</a>
+                        <span class="step-hint">浏览器右上角出现下载文件</span>
+                    </li>
+                    <li>
+                        双击下载好的 <code>claude-code-portal-ca.crt</code>
+                        <span class="step-hint">若弹"打开文件 - 安全警告"（下载自互联网）→ 直接"打开"即可</span>
+                    </li>
+                    <li>
+                        弹出"证书"对话框 → 点右下角 <b>"安装证书(C)…"</b> 按钮
+                        <span class="step-hint">⚠ 不是点"确定"——点"确定"只是关闭对话框，不会安装</span>
+                    </li>
+                    <li>
+                        "证书导入向导" → 选 <b>"当前用户(U)"</b>（无需管理员权限）→ 下一步
+                    </li>
+                    <li>
+                        选 <b>"将所有的证书都放入下列存储(P)"</b> → 点"浏览(B)…" →
+                        选 <b>"受信任的根证书颁发机构"</b> → 确定 → 下一步
+                        <span class="step-hint">⚠ 这里选错 store 是最常见的失败原因——必须选"受信任的根证书颁发机构"，不是"个人"也不是"中间证书颁发机构"</span>
+                    </li>
+                    <li>
+                        "正在完成证书导入向导" → 点 <b>"完成"</b>
+                    </li>
+                    <li>
+                        <b style="color:var(--rust)">关键 →</b> 弹出"安全性警告"对话框：
+                        <i>"Windows 无法验证该证书是否真的来自 'Claude Code Portal Internal CA'。
+                        您是否要安装此证书？"</i><br>
+                        → 点 <b>"是(Y)"</b>（这是自签 CA 必然会出现的提示，不是错误）
+                        <span class="step-hint">⚠ 点"否"等于没装，跟没做这一步一样</span>
+                    </li>
+                    <li>
+                        "导入成功"提示 → 确定；前面的"证书"对话框也可关掉
+                    </li>
+                    <li>
+                        <b style="color:var(--rust)">关键 →</b> 必须<b>完全退出 Chrome</b>再打开。
+                        Chrome 后台进程（service worker / GPU / network）会缓存 trust store
+                        数小时，单纯刷新页面或关窗口不生效。三种退出方法任选其一：
+                        <div class="ca-sub">① 任务栏右键 Chrome 图标 → <b>"关闭所有窗口"</b> 或 <b>"退出 Chrome"</b></div>
+                        <div class="ca-sub">② 地址栏输入 <code>chrome://quit</code> 回车</div>
+                        <div class="ca-sub">③ PowerShell 里执行 <code>taskkill /F /IM chrome.exe</code></div>
+                        <span class="step-hint">⚠ <code>Ctrl+Shift+Q</code> 是 QQ 的截图快捷键，不是 Chrome 的</span>
+                    </li>
+                    <li>
+                        重新打开 Chrome 访问 Code Server → <b>不应该再看到"您的连接不是私密连接"</b>警告，直接进入
+                    </li>
+                </ol>
+
+                <p class="ca-foot">
+                    <b style="color:var(--mid)">验证是否装上：</b><br>
+                    方法 1：<code>Win+R</code> → 输入 <code>certmgr.msc</code> →
+                    受信任的根证书颁发机构 → 证书 → 找 <b>"Claude Code Portal Internal CA"</b>。<br>
+                    方法 2：PowerShell 执行
+                    <code class="mono-block">Get-ChildItem Cert:\CurrentUser\Root | Where-Object { $_.Subject -like '*Claude*' }</code>
+                    应返回一条 Issuer / Subject 都是 Claude Code Portal Internal CA 的记录。
+                </p>
+
+                <p class="ca-foot">
+                    <b style="color:var(--mid)">浏览器兼容性：</b><br>
+                    ✓ <b>Chrome</b>（推荐）、<b>Edge</b>——两者共用 Windows 信任库，
+                    给 Chrome 装一份 Edge 自动生效，反之亦然。<br>
+                    ✗ <b>Firefox</b>：Firefox 用自己的证书库，<b>不读</b> Windows 根证书。
+                    需要打开 Firefox → 设置 → 隐私与安全 → 证书 → 查看证书 → 证书颁发机构 →
+                    导入 → 选 <code>claude-code-portal-ca.crt</code> → 勾选
+                    "信任由此证书颁发机构标识的网站"。<br>
+                    ✗ <b>iOS / iPadOS Safari</b>：苹果不允许向系统 trust store 装用户 CA，
+                    本方案对 iOS 不可用，需要走公网 CA 签发的 cert（不在本部署范围内）。
+                </p>
+
+                <label class="ca-checkbox">
+                    <input type="checkbox" id="ca-installed">
+                    我已安装 CA 证书，下次不再提示
+                </label>
+            </div>
+        </details>
+
+    </div>
+</div>
+
+<div class="foot">
+    <span>CLAUDE-CODE-PORTAL · v1</span>
+    <span id="foot-host">host: —</span>
+</div>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

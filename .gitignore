@@ -1,0 +1,13 @@
+/.env
+/volumes/
+/portal/__pycache__/
+/vendor/*.vsix
+/vendor/*.deb
+/vendor/*.bak
+/console.log
+*.tar.gz
+*.pyc
+*.pyo
+.DS_Store
+Thumbs.db
+/.claude/

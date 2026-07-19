@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Claude Code · Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+    --paper:    #FAFAF7;
+    --surface:  #FFFFFF;
+    --ink:      #111418;
+    --mid:      #4A5260;
+    --muted:    #6B7280;
+    --hairline: #DDD9CF;
+    --hairline-strong: #C9C4B6;
+    --cobalt:   #1A4FDB;
+    --cobalt-2: #163DAE;
+    --jade:     #15803D;
+    --rust:     #C2410C;
+    --crimson:  #B91C1C;
+    --warn-bg:  #FFF8E1;
+    --warn-bd:  #F0D58A;
+    --err-bg:   #FEF2F2;
+    --err-bd:   #FCA5A5;
+    --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "PingFang SC",
+            "Microsoft YaHei", "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", Consolas, "Courier New", monospace;
+    --r-sm: 2px;
+    --r-md: 4px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+/* ticket strip — same signature */
+.ticket-strip {
+    background: var(--surface);
+    border-bottom: 1px solid var(--hairline);
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--mid);
+}
+.ticket-strip .left,
+.ticket-strip .right { display: flex; align-items: center; gap: 14px; }
+.ticket-strip .mono-block { font-weight: 600; color: var(--ink); }
+.ticket-strip .sep { color: var(--hairline-strong); }
+.ticket-strip a {
+    color: var(--mid);
+    text-decoration: none;
+    border-bottom: 1px solid var(--hairline);
+    padding-bottom: 1px;
+}
+.ticket-strip a:hover { color: var(--ink); border-color: var(--ink); }
+.status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--mid);
+}
+.status-pill .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--hairline-strong);
+}
+.status-pill.is-ready   .dot { background: var(--jade); }
+.status-pill.is-error   .dot { background: var(--crimson); }
+.status-pill.is-warn    .dot { background: var(--rust); }
+
+.canvas {
+    flex: 1;
+    padding: 36px 20px 60px;
+    display: flex;
+    justify-content: center;
+}
+.panel {
+    width: 100%;
+    max-width: 920px;
+}
+
+/* login card */
+.card {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-md);
+    padding: 28px;
+}
+.card-title {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--mid);
+    margin-bottom: 4px;
+}
+.card-h1 {
+    font-family: var(--mono);
+    font-size: 19px;
+    font-weight: 600;
+    color: var(--ink);
+    margin-bottom: 8px;
+}
+.card-sub {
+    color: var(--mid);
+    font-size: 13px;
+    margin-bottom: 22px;
+    line-height: 1.55;
+}
+.field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.field-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--mid);
+}
+.field input {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--hairline-strong);
+    border-radius: var(--r-sm);
+    padding: 10px 12px;
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 13px;
+}
+.field input:focus {
+    outline: none;
+    border-color: var(--cobalt);
+    box-shadow: 0 0 0 3px rgba(26, 79, 219, 0.12);
+}
+.btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    border-radius: var(--r-sm);
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: all 0.12s;
+    text-decoration: none;
+    white-space: nowrap;
+}
+.btn-primary {
+    background: var(--cobalt);
+    color: #fff;
+}
+.btn-primary:hover:not(:disabled) { background: var(--cobalt-2); }
+.btn-primary:disabled { opacity: 0.55; cursor: wait; }
+.btn-ghost {
+    background: transparent;
+    color: var(--mid);
+    border-color: var(--hairline-strong);
+}
+.btn-ghost:hover:not(:disabled) { color: var(--ink); border-color: var(--ink); }
+.btn-warn {
+    background: var(--rust);
+    color: #fff;
+    border-color: var(--rust);
+}
+.btn-warn:hover:not(:disabled) { background: #9A3509; border-color: #9A3509; }
+.btn-sm { padding: 6px 10px; font-size: 12px; }
+.btn-link {
+    background: transparent;
+    color: var(--mid);
+    border: none;
+    padding: 4px 0;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    cursor: pointer;
+    border-bottom: 1px solid var(--hairline);
+}
+.btn-link:hover { color: var(--ink); border-color: var(--ink); }
+
+/* status */
+.status {
+    margin-top: 14px;
+    padding: 10px 12px;
+    border-radius: var(--r-sm);
+    font-size: 12px;
+    font-family: var(--mono);
+    background: var(--paper);
+    border: 1px solid var(--hairline);
+    color: var(--mid);
+    display: none;
+}
+.status.is-visible { display: block; }
+.status.is-error   { background: var(--err-bg); border-color: var(--err-bd); color: var(--crimson); }
+.status.is-success { background: #F0FDF4; border-color: #86EFAC; color: var(--jade); }
+
+/* table */
+.list-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 14px;
+}
+.list-head h2 {
+    font-family: var(--mono);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--ink);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+.list-head .meta {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--mid);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+.table {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-md);
+    overflow: hidden;
+}
+.theader, .trow {
+    display: grid;
+    grid-template-columns: 180px 160px 70px 100px 120px 1fr;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 18px;
+    font-family: var(--mono);
+    font-size: 12px;
+}
+.theader {
+    background: var(--paper);
+    border-bottom: 1px solid var(--hairline);
+    color: var(--mid);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+.trow {
+    border-bottom: 1px solid var(--hairline);
+}
+.trow:last-child { border-bottom: none; }
+.trow .uid {
+    font-weight: 600;
+    color: var(--ink);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.trow .name {
+    color: var(--ink);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+}
+.trow .name.is-empty {
+    color: var(--muted);
+    font-weight: 400;
+    font-style: italic;
+}
+.trow .port { color: var(--mid); }
+.trow .age  { color: var(--muted); font-size: 11px; }
+.trow .actions {
+    display: flex;
+    gap: 6px;
+    justify-content: flex-end;
+}
+.tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 8px;
+    border-radius: var(--r-sm);
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-weight: 600;
+    border: 1px solid var(--hairline);
+    color: var(--mid);
+    background: var(--surface);
+    width: fit-content;
+}
+.tag.running { color: var(--jade); border-color: #86EFAC; background: #F0FDF4; }
+.tag.exited  { color: var(--mid); }
+.tag.stopped { color: var(--rust); border-color: #FCA5A5; background: var(--err-bg); }
+.tag.other   { color: var(--mid); }
+
+.empty {
+    padding: 60px 20px;
+    text-align: center;
+    color: var(--mid);
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.04em;
+}
+.empty .big {
+    font-size: 14px;
+    color: var(--ink);
+    margin-bottom: 6px;
+}
+
+/* row action panel */
+.trow.expanded { background: #FCFCFA; }
+.row-panel {
+    grid-column: 1 / -1;
+    padding: 14px 0 6px;
+    border-top: 1px dashed var(--hairline);
+    margin-top: 12px;
+    display: none;
+}
+.trow.expanded .row-panel { display: block; }
+.row-panel .opts {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 8px 0 12px;
+}
+.row-panel .opts label {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--ink);
+    cursor: pointer;
+    padding: 4px 0;
+}
+.row-panel .opts label input { margin-top: 3px; }
+.row-panel .opts label .opt-desc { color: var(--muted); font-size: 11px; }
+.row-panel .opts label .opt-title { font-weight: 500; }
+
+/* foot */
+.foot {
+    border-top: 1px solid var(--hairline);
+    padding: 12px 20px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+@media (max-width: 720px) {
+    .theader, .trow { grid-template-columns: 1fr; gap: 6px; padding: 12px 14px; }
+    .theader { display: none; }
+    .trow .actions { justify-content: flex-start; }
+    .ticket-strip { font-size: 10px; padding: 8px 12px; }
+    .ticket-strip .left .mono-block { display: none; }
+}
+</style>
+</head>
+<body>
+
+<div class="ticket-strip">
+    <div class="left">
+        <span>CLAUDE · CODE</span>
+        <span class="sep">/</span>
+        <span class="mono-block">ADMIN</span>
+    </div>
+    <div class="right">
+        <span class="status-pill" id="status-pill">
+            <span class="dot"></span>
+            <span id="status-text">SETUP</span>
+        </span>
+        <a href="#" id="logout-link" hidden>退出</a>
+        <a href="/">← 用户门户</a>
+    </div>
+</div>
+
+<div class="canvas">
+    <div class="panel">
+
+        <!-- login card -->
+        <div class="card" id="login-card">
+            <div class="card-title">管理员登录</div>
+            <h1 class="card-h1">管理员面板</h1>
+            <p class="card-sub">输入管理员密码以管理所有由 portal 启动的用户容器。</p>
+
+            <form id="login-form" autocomplete="off">
+                <div class="field">
+                    <div class="field-label"><span>Password</span></div>
+                    <input name="password" type="password" required autofocus placeholder="管理员密码">
+                </div>
+                <div class="actions" style="display:flex;gap:10px;margin-top:6px">
+                    <button type="submit" class="btn btn-primary" id="login-btn">登录</button>
+                </div>
+            </form>
+
+            <div class="status" id="login-status"></div>
+        </div>
+
+        <!-- list card (hidden until authed) -->
+        <div id="list-card" hidden>
+            <div class="list-head">
+                <h2>用户容器</h2>
+                <span class="meta" id="list-meta">— containers</span>
+            </div>
+            <div class="table" id="table-wrap">
+                <div class="theader">
+                    <span>USER ID</span>
+                    <span>NAME</span>
+                    <span>PORT</span>
+                    <span>STATUS</span>
+                    <span>LAST SEEN</span>
+                    <span style="text-align:right">ACTIONS</span>
+                </div>
+                <div id="rows"></div>
+            </div>
+            <div class="status" id="list-status"></div>
+        </div>
+
+    </div>
+</div>
+
+<div class="foot">
+    <span>CLAUDE-CODE-PORTAL · ADMIN</span>
+    <span id="foot-host">host: —</span>
+</div>
+
+<script>
+document.getElementById("foot-host").textContent = `host: ${window.location.hostname}`;
+</script>
+<script src="{{ url_for('static', filename='admin.js') }}"></script>
+</body>
+</html>
