@@ -331,6 +331,14 @@ body {
     display: none;
 }
 .trow.expanded .row-panel { display: block; }
+.row-panel .opts-title {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--rust);
+    margin-bottom: 8px;
+}
 .row-panel .opts {
     display: flex;
     flex-direction: column;
@@ -349,6 +357,12 @@ body {
 .row-panel .opts label input { margin-top: 3px; }
 .row-panel .opts label .opt-desc { color: var(--muted); font-size: 11px; }
 .row-panel .opts label .opt-title { font-weight: 500; }
+.row-panel .opts-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 6px;
+}
 
 /* foot */
 .foot {

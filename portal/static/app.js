@@ -338,6 +338,10 @@ if (renameSave) {
             return;
         }
         const newName = renameInput.value.trim();
+        if (!newName) {
+            setStatus(statusEl2, "❌ 显示名称必填", "error");
+            return;
+        }
         renameSave.disabled = true;
         setStatus(statusEl2, '<span class="spinner"></span>正在保存…');
         try {
@@ -436,6 +440,10 @@ form.addEventListener("submit", e => {
         displayName: (fd.get("displayName") || "").toString().trim(),
     };
     if (!creds.baseUrl || !creds.apiKey || !creds.opusModel || !creds.sonnetModel || !creds.haikuModel) return;
+    if (!creds.displayName) {
+        setStatus(statusEl, "❌ 请填写显示名称（管理员识别用）", "error");
+        return;
+    }
 
     // 判断"是不是 resubmit 流程"：用 savedHash 与当前 hash 对比 + 看 step2 是否显示过
     // 简化：savedCredsHash() 跟当前 creds 不同就当作 resubmit

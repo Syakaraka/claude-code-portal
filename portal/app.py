@@ -124,6 +124,12 @@ WORKSPACE_FILE_NAME  = _env("WORKSPACE_FILE_NAME",  "workspace.code-workspace")
 SAN_CONFIG_NAME      = _env("SAN_CONFIG_NAME",      "san.cnf")
 CSR_FILENAME         = _env("CSR_FILENAME",         "cert.csr")
 
+# === 活跃容器上限 ===
+# 0 = 不限（默认）；非 0 = 拒绝超过上限的 start / rebuild 请求。
+# "活跃"=docker 报的 status=="running"，不计入已 exited 的容器。
+# 防止某用户狂拉 / 单机内存爆。
+MAX_ACTIVE_CONTAINERS = _env_int("MAX_ACTIVE_CONTAINERS", 0)
+
 # === Flask session 签名密钥 ===
 # secret_key 必须跨 worker 一致 —— 否则 session cookie 在某个 worker 签出来，
 # 落到另一个 worker 就解不出来 → 401（用户症状：登录后随机 401，5 秒内必现）。
@@ -307,13 +313,43 @@ def ensure_user_dir(user_id: str, wipe: bool = False) -> str:
     """
     path = os.path.join(USER_DATA_BASE, user_id)  # 容器内视角
     if wipe and os.path.exists(path):
-        shutil.rmtree(path, ignore_errors=True)
+        # 用 onerror 回调暴露错误，而不是 swallow —— 之前 ignore_errors=True 会
+        # 把"目录里有正在写的文件"等失败静默，导致用户以为 reset 没生效。
+        def _on_rm_error(fn, p, exc_info):
+            app.logger.error(f"ensure_user_dir wipe: rmtree failed at {p} ({fn}): {exc_info[1]}")
+        try:
+            shutil.rmtree(path, onerror=_on_rm_error)
+        except Exception as e:
+            app.logger.error(f"ensure_user_dir wipe: rmtree raised for {user_id}: {e}")
+            raise
+        # rmtree 后目录应不存在；如果还在（罕见，例如有 bind mount 残留），
+        # 显式再删一次剩余内容，避免残留文件被误归为"已重置"
+        if os.path.exists(path):
+            remaining = os.listdir(path)
+            app.logger.warning(
+                f"ensure_user_dir: after rmtree, {path} still has {remaining}; "
+                f"trying delete-then-recreate"
+            )
+            for entry in remaining:
+                try:
+                    fp = os.path.join(path, entry)
+                    if os.path.isdir(fp) and not os.path.islink(fp):
+                        shutil.rmtree(fp, onerror=_on_rm_error)
+                    else:
+                        os.unlink(fp)
+                except Exception as e:
+                    app.logger.error(f"ensure_user_dir: failed to remove leftover {entry}: {e}")
         app.logger.info(f"wiped user dir: {user_id}")
     if not os.path.exists(path):
-        # 首次创建：从模板复制
+        # 首次创建（首次启动 or 刚 wipe 完）：从模板复制
         if os.path.isdir(USER_TEMPLATE):
-            shutil.copytree(USER_TEMPLATE, path)
-            app.logger.info(f"initialized user dir from template: {user_id}")
+            try:
+                shutil.copytree(USER_TEMPLATE, path)
+                app.logger.info(f"initialized user dir from template: {user_id}")
+            except Exception as e:
+                app.logger.error(f"ensure_user_dir: copytree from template failed for {user_id}: {e}")
+                # 降级：建空目录，不阻断
+                os.makedirs(path, exist_ok=True)
         else:
             # 模板目录缺失则降级为空目录（不阻断启动）
             os.makedirs(path, exist_ok=True)
@@ -346,6 +382,26 @@ def _chown_recursive(path: str, uid: int, gid: int) -> None:
 def host_user_dir_for(user_id: str) -> str:
     """user_id → host 视角绝对路径（给 docker.run() 当 bind source）。"""
     return os.path.join(HOST_USER_DATA_BASE, user_id)
+
+
+def count_active_claude_containers() -> tuple:
+    """统计 portal 编排的容器数。
+
+    返回 (active, total)：
+      active — status=="running" 的数量（受 MAX_ACTIVE_CONTAINERS 约束）
+      total  — 含 exited/created/restarting 的全部 portal 容器（admin 展示用）
+    """
+    if not client:
+        return 0, 0
+    try:
+        containers = client.containers.list(
+            all=True, filters={"label": f"{PORTAL_LABEL}=claude-portal"}
+        )
+    except Exception as e:
+        app.logger.error(f"count_active_claude_containers: list failed: {e}")
+        return 0, 0
+    active = sum(1 for c in containers if c.status == "running")
+    return active, len(containers)
 
 
 def get_used_ports() -> set:
@@ -787,6 +843,10 @@ def api_start():
         return jsonify({
             "error": "缺少必要字段 baseUrl/apiKey/opusModel/sonnetModel/haikuModel"
         }), 400
+    if not display_name:
+        return jsonify({
+            "error": "缺少 displayName（显示名称必填）"
+        }), 400
 
     user_id = hash_api_key(api_key)
     short = user_id[:8]
@@ -821,6 +881,18 @@ def api_start():
             })
 
     # 2) 起新的
+    if MAX_ACTIVE_CONTAINERS > 0:
+        active, _ = count_active_claude_containers()
+        if active >= MAX_ACTIVE_CONTAINERS:
+            app.logger.warning(
+                f"start rejected: active={active} >= MAX_ACTIVE_CONTAINERS={MAX_ACTIVE_CONTAINERS}"
+            )
+            return jsonify({
+                "error": f"活跃容器已达上限 {MAX_ACTIVE_CONTAINERS}（当前 {active}）。请稍后再试，或联系管理员清理。",
+                "code": "MAX_ACTIVE_REACHED",
+                "active": active,
+                "limit": MAX_ACTIVE_CONTAINERS,
+            }), 429
     try:
         container, port, password = start_container(
             user_id, base_url, api_key, opus_model, sonnet_model, haiku_model
@@ -943,6 +1015,8 @@ def api_profile():
     new_name = _sanitize_display_name(data.get("displayName"))
     if not api_key:
         return jsonify({"error": "缺少 apiKey"}), 400
+    if not new_name:
+        return jsonify({"error": "缺少 displayName（显示名称必填，不能清空）"}), 400
 
     user_id = hash_api_key(api_key)
     short = user_id[:8]
@@ -967,10 +1041,28 @@ def api_rebuild():
     reset_scratch = bool(data.get("resetScratch", False))
     if not (base_url and api_key and opus_model and sonnet_model and haiku_model):
         return jsonify({"error": "缺少必要字段"}), 400
+    if not display_name:
+        return jsonify({"error": "缺少 displayName（显示名称必填）"}), 400
 
     user_id = hash_api_key(api_key)
     short = user_id[:8]
     app.logger.info(f"rebuild: user={short}... reset_home={reset_home} reset_scratch={reset_scratch} displayName={display_name!r}")
+    # 上限检查：rebuild 总是先 stop+remove 旧容器再起新的，活跃数变化跟 start 一样
+    # 都要先验。但要排除自己的旧容器（rebuild 时它还没被删），否则永远自增 → 永远超限
+    if MAX_ACTIVE_CONTAINERS > 0:
+        active, _ = count_active_claude_containers()
+        # 自己有一个要死的，先扣 1
+        own_running = 1 if find_user_container(user_id) else 0
+        if (active - own_running) >= MAX_ACTIVE_CONTAINERS:
+            app.logger.warning(
+                f"rebuild rejected: active={active} (own={own_running}) >= MAX_ACTIVE_CONTAINERS={MAX_ACTIVE_CONTAINERS}"
+            )
+            return jsonify({
+                "error": f"活跃容器已达上限 {MAX_ACTIVE_CONTAINERS}（当前 {active}）。请稍后再试，或联系管理员清理。",
+                "code": "MAX_ACTIVE_REACHED",
+                "active": active,
+                "limit": MAX_ACTIVE_CONTAINERS,
+            }), 429
     try:
         container, port, password = rebuild_container(
             user_id, base_url, api_key, opus_model, sonnet_model, haiku_model,
@@ -1099,7 +1191,13 @@ def api_admin_containers():
             continue
 
     items.sort(key=lambda x: x.get("last_seen") or 0, reverse=True)
-    return jsonify({"containers": items})
+    active = sum(1 for c in containers if c.status == "running")
+    return jsonify({
+        "containers": items,
+        "active":     active,
+        "total":      len(containers),
+        "limit":      MAX_ACTIVE_CONTAINERS,
+    })
 
 
 @app.route("/api/admin/stop", methods=["POST"])
@@ -1123,7 +1221,13 @@ def api_admin_stop():
 
 @app.route("/api/admin/delete", methods=["POST"])
 def api_admin_delete():
-    """管理员强制删除某个用户容器（可选清 home/scratch 数据）。"""
+    """管理员强制删除某个用户容器（可选清 home/scratch 数据）。
+
+    wipe_home / wipe_scratch：
+      - wipe_home=True   → 删除整个 volumes/users/<uid>/（含 scratch、cert、meta 等一切）
+      - wipe_home=False, wipe_scratch=True → 仅删 scratch/，保留 home/settings/扩展
+      - 两个都 False     → 只删容器，用户数据保留供下次登录复用
+    """
     _, err = require_admin_session()
     if err:
         return err
@@ -1141,23 +1245,39 @@ def api_admin_delete():
         except Exception:
             pass
         c.remove(force=True)
+        app.logger.info(f"admin delete: removed container for {uid[:8]}...")
     except NotFound:
-        pass
+        app.logger.info(f"admin delete: container for {uid[:8]}... not found, continuing")
     except Exception as e:
         return jsonify({"error": f"删除容器失败: {e}"}), 500
-    # 删数据（按需）
+    # 删数据（按需）。注意顺序：先删容器再删目录（容器还在跑时不能 rm bind source 内容）
     user_dir = os.path.join(USER_DATA_BASE, uid)
+    wiped = []
     if wipe_home and os.path.isdir(user_dir):
-        shutil.rmtree(user_dir, ignore_errors=True)
+        def _on_err(fn, p, exc_info):
+            app.logger.error(f"admin delete wipe_home: rmtree failed at {p} ({fn}): {exc_info[1]}")
+        try:
+            shutil.rmtree(user_dir, onerror=_on_err)
+            wiped.append("home")
+            app.logger.info(f"admin delete: wiped home for {uid[:8]}...")
+        except Exception as e:
+            app.logger.error(f"admin delete: wipe_home raised for {uid[:8]}...: {e}")
     elif wipe_scratch:
         scratch = os.path.join(user_dir, SCRATCH_DIR_NAME)
         if os.path.isdir(scratch):
-            shutil.rmtree(scratch, ignore_errors=True)
-    # 清 cache
+            def _on_err(fn, p, exc_info):
+                app.logger.error(f"admin delete wipe_scratch: rmtree failed at {p} ({fn}): {exc_info[1]}")
+            try:
+                shutil.rmtree(scratch, onerror=_on_err)
+                wiped.append("scratch")
+                app.logger.info(f"admin delete: wiped scratch for {uid[:8]}...")
+            except Exception as e:
+                app.logger.error(f"admin delete: wipe_scratch raised for {uid[:8]}...: {e}")
+    # 清 cache（无论是否 wipe，都把 user 从 cache 里去掉；用户下次登录会重新插）
     users = load_users_cache()
     users.pop(uid, None)
     save_users_cache(users)
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "wiped": wiped})
 
 
 @app.errorhandler(404)

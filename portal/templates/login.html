@@ -665,10 +665,10 @@ body {
                 </div>
                 <div class="field">
                     <div class="field-label">
-                        <span>显示名称 <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-weight:400">（可选）</span></span>
+                        <span>显示名称 <span style="color:var(--rust)">*</span></span>
                         <span class="field-hint">给管理员识别用，不影响隔离</span>
                     </div>
-                    <input name="displayName" maxlength="40" placeholder="张伟（产品组）" autocomplete="off">
+                    <input name="displayName" maxlength="40" required placeholder="张伟（产品组）" autocomplete="off">
                 </div>
                 <div class="field-row">
                     <div class="field">
@@ -747,10 +747,10 @@ body {
             <div class="rename-panel" id="rename-panel" hidden>
                 <h4>✎ 修改显示名称</h4>
                 <p>
-                    仅修改管理员面板中你那一行显示的名字，不影响容器或凭据。留空表示未命名（管理员只看到 user_id）。
+                    仅修改管理员面板中你那一行显示的名字，不影响容器或凭据。名字必填（最多 40 字符）。
                 </p>
                 <div class="field" style="margin-bottom:10px">
-                    <input id="rename-input" maxlength="40" placeholder="新的显示名称（留空清空）">
+                    <input id="rename-input" maxlength="40" required placeholder="新的显示名称">
                 </div>
                 <div class="opt-actions">
                     <button type="button" class="btn btn-primary" id="rename-save">保存</button>

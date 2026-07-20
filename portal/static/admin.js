@@ -120,11 +120,17 @@ async function refresh() {
         return;
     }
     clearStatus(listStatus);
-    renderRows(data.containers || []);
+    renderRows(data.containers || [], {
+        active: data.active,
+        limit:  data.limit,
+    });
 }
 
-function renderRows(items) {
-    listMeta.textContent = `${items.length} containers`;
+function renderRows(items, meta) {
+    const active = meta?.active ?? items.filter(c => (c.status||"").toLowerCase() === "running").length;
+    const limit  = meta?.limit  ?? 0;
+    const limitStr = limit > 0 ? `${active} / ${limit}` : `${active}`;
+    listMeta.textContent = `活跃 ${limitStr} · 共 ${items.length}`;
     if (!items.length) {
         rowsEl.innerHTML = `
             <div class="empty">
@@ -145,38 +151,42 @@ function rowHtml(c) {
     const tagCls = ["running","exited","stopped","other"].includes(status)
         ? status : "other";
     const name = (c.display_name || "").trim();
+    // displayName 已改为必填——旧数据（升级前建的用户）可能没有，正常显示空槽
+    const nameHtml = name
+        ? escapeHtml(name)
+        : `<span class="is-empty">（旧数据未填）</span>`;
     return `
         <div class="trow" data-uid="${escapeHtml(c.user_id)}">
             <span class="uid" title="${escapeHtml(c.user_id)}">${escapeHtml(c.user_id)}</span>
-            <span class="name ${name ? "" : "is-empty"}" title="${escapeHtml(name)}">${name ? escapeHtml(name) : "—"}</span>
+            <span class="name ${name ? "" : "is-empty"}" title="${escapeHtml(name)}">${nameHtml}</span>
             <span class="port">${c.port ?? "—"}</span>
             <span><span class="tag ${tagCls}">${escapeHtml(c.status || "—")}</span></span>
             <span class="age">${escapeHtml(timeAgo(c.last_seen))}</span>
             <span class="actions">
                 ${status === "running" ? `<button class="btn btn-ghost btn-sm" data-action="stop">停止</button>` : ""}
-                <button class="btn btn-ghost btn-sm" data-action="rebuild-toggle">重建</button>
-                <button class="btn btn-warn btn-sm" data-action="delete">删除</button>
+                <button class="btn btn-warn btn-sm" data-action="delete-toggle">删除 ▼</button>
             </span>
             <div class="row-panel">
-                <div style="font-family:var(--mono);font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:var(--rust);margin-bottom:6px">⚠ 重建 / 删除选项</div>
+                <div class="opts-title">⚠ 删除选项</div>
                 <div class="opts">
                     <label>
                         <input type="checkbox" data-opt="wipeHome">
                         <span>
                             <div class="opt-title">同时清空用户目录</div>
-                            <div class="opt-desc">删除 volumes/users/&lt;uid&gt;/ 全部数据（设置、扩展、缓存）。注意也会清掉显示名称 meta。</div>
+                            <div class="opt-desc">删除 volumes/users/&lt;uid&gt;/ 全部数据（设置、扩展、对话缓存、显示名称 meta）。</div>
                         </span>
                     </label>
                     <label>
                         <input type="checkbox" data-opt="wipeScratch">
                         <span>
                             <div class="opt-title">同时清空临时目录</div>
-                            <div class="opt-desc">删除 volumes/users/&lt;uid&gt;/scratch 全部数据</div>
+                            <div class="opt-desc">删除 volumes/users/&lt;uid&gt;/scratch 全部数据（仅临时区，保留 settings/扩展）。</div>
                         </span>
                     </label>
                 </div>
-                <div style="display:flex;gap:8px;justify-content:flex-end">
-                    <button class="btn btn-ghost btn-sm" data-action="collapse">收起</button>
+                <div class="opts-actions">
+                    <button class="btn btn-ghost btn-sm" data-action="cancel">取消</button>
+                    <button class="btn btn-warn btn-sm" data-action="delete-confirm">确认删除</button>
                 </div>
             </div>
         </div>`;
@@ -186,10 +196,6 @@ async function handleAction(btn) {
     const row = btn.closest(".trow");
     const uid = row.dataset.uid;
     const action = btn.dataset.action;
-    if (action === "collapse") {
-        row.classList.remove("expanded");
-        return;
-    }
     if (action === "stop") {
         if (!confirm(`停止容器 claude-${uid}?`)) return;
         btn.disabled = true;
@@ -212,20 +218,23 @@ async function handleAction(btn) {
         }
         return;
     }
-    if (action === "rebuild-toggle") {
-        // 没有用户 API key 走 admin 路径不能直接 rebuild（需要凭据）
-        // 这里只暴露 "delete" + 选项（删除后可由用户重新登录拉起新容器）。
-        // 真正的"重建"还是让用户自己操作门户。
+    if (action === "delete-toggle") {
+        // 展开 / 收起删除选项面板（同一行的二级确认）
         row.classList.toggle("expanded");
         return;
     }
-    if (action === "delete") {
+    if (action === "cancel") {
+        row.classList.remove("expanded");
+        return;
+    }
+    if (action === "delete-confirm") {
         const wipeHome    = !!row.querySelector('[data-opt="wipeHome"]').checked;
         const wipeScratch = !!row.querySelector('[data-opt="wipeScratch"]').checked;
-        const what = wipeHome ? "容器 + 用户目录" :
+        const what = wipeHome    ? "容器 + 用户目录" :
                      wipeScratch ? "容器 + 临时目录" : "仅容器";
-        if (!confirm(`删除 ${uid.slice(0,8)}（${what}）?用户可重新登录拉起新容器。`)) return;
-        btn.disabled = true;
+        if (!confirm(`删除 ${uid.slice(0,8)}（${what}）？用户可重新登录拉起新容器。`)) return;
+        const confirmBtn = row.querySelector('[data-action="delete-confirm"]');
+        if (confirmBtn) confirmBtn.disabled = true;
         setStatus(listStatus, `删除 ${uid.slice(0,8)}…`);
         const resp = await authFetch("/api/admin/delete", {
             method: "POST",
@@ -238,9 +247,10 @@ async function handleAction(btn) {
                 setStatus(listStatus, `删除失败：${data.error || resp.statusText}`, "error");
             } else {
                 setStatus(listStatus, `已删除 ${uid.slice(0,8)}`, "success");
+                row.classList.remove("expanded");
             }
         } finally {
-            btn.disabled = false;
+            if (confirmBtn) confirmBtn.disabled = false;
             refresh();
         }
         return;
@@ -266,7 +276,10 @@ setInterval(() => {
             return resp.json().then(data => {
                 if (resp.ok && data && !data.error) {
                     clearStatus(listStatus);
-                    renderRows(data.containers || []);
+                    renderRows(data.containers || [], {
+                        active: data.active,
+                        limit:  data.limit,
+                    });
                 }
             });
         });
