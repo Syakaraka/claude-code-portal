@@ -155,11 +155,26 @@ function rowHtml(c) {
     const nameHtml = name
         ? escapeHtml(name)
         : `<span class="is-empty">（旧数据未填）</span>`;
+    // port cell：实际绑定端口 + 固定端口状态标签
+    //   - 端口空 → "—"（exited 容器没有 host port）
+    //   - 没有 .port（升级前用户）→ 仅显示端口号（无标记）
+    //   - pinned_port === port → "9905 ✓"（绿色，自上次启动以来稳定）
+    //   - pinned_port !== port → "9905 ⚠"（rust 色，原本固定到 X 被占用，自动重摇）
+    let portCell;
+    if (c.port == null) {
+        portCell = `<span class="muted">—</span>`;
+    } else if (c.pinned_port == null) {
+        portCell = `${c.port}`;
+    } else if (c.pinned_port === c.port) {
+        portCell = `${c.port}<span class="pin-tag pin-ok" title="固定端口 .port=${c.port}（每次启动都回归此端口）">✓</span>`;
+    } else {
+        portCell = `${c.port}<span class="pin-tag pin-warn" title=".port=${c.pinned_port} 已被其他容器占用，本次自动重摇到 ${c.port}">⚠</span>`;
+    }
     return `
         <div class="trow" data-uid="${escapeHtml(c.user_id)}">
             <span class="uid" title="${escapeHtml(c.user_id)}">${escapeHtml(c.user_id)}</span>
             <span class="name ${name ? "" : "is-empty"}" title="${escapeHtml(name)}">${nameHtml}</span>
-            <span class="port">${c.port ?? "—"}</span>
+            <span class="port">${portCell}</span>
             <span><span class="tag ${tagCls}">${escapeHtml(c.status || "—")}</span></span>
             <span class="age">${escapeHtml(timeAgo(c.last_seen))}</span>
             <span class="actions">
@@ -173,14 +188,14 @@ function rowHtml(c) {
                         <input type="checkbox" data-opt="wipeHome">
                         <span>
                             <div class="opt-title">同时清空用户目录</div>
-                            <div class="opt-desc">删除 volumes/users/&lt;uid&gt;/ 全部数据（设置、扩展、对话缓存、显示名称 meta）。</div>
+                            <div class="opt-desc">删除 volumes/users/&lt;uid&gt;/ 全部数据（设置、扩展、对话缓存、显示名称 meta、固定端口 .port）。</div>
                         </span>
                     </label>
                     <label>
                         <input type="checkbox" data-opt="wipeScratch">
                         <span>
                             <div class="opt-title">同时清空临时目录</div>
-                            <div class="opt-desc">删除 volumes/users/&lt;uid&gt;/scratch 全部数据（仅临时区，保留 settings/扩展）。</div>
+                            <div class="opt-desc">删除 volumes/users/&lt;uid&gt;/scratch 全部数据（仅临时区，保留 settings/扩展、.port）。</div>
                         </span>
                     </label>
                 </div>

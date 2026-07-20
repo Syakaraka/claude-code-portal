@@ -130,6 +130,14 @@ CSR_FILENAME         = _env("CSR_FILENAME",         "cert.csr")
 # 防止某用户狂拉 / 单机内存爆。
 MAX_ACTIVE_CONTAINERS = _env_int("MAX_ACTIVE_CONTAINERS", 0)
 
+# === Per-user 固定端口（.port 文件）===
+# 用户首次启动容器时被分配一个 host port，写到 volumes/users/<uid>/.port；
+# 后续重建 / 重启 portal / 重建容器都优先复用这个端口。
+# 失败降级：端口被其他用户占用 / 落范围外 / 文件损坏 → 重新摇号并覆写。
+# wipe_home 会连带删除 .port（语义：用户目录重置 = 端口也重置）；
+# 如果需要保留，手动 cp volumes/users/<uid>/.port 出来再放回去。
+PORT_FILE_NAME = ".port"
+
 # === Flask session 签名密钥 ===
 # secret_key 必须跨 worker 一致 —— 否则 session cookie 在某个 worker 签出来，
 # 落到另一个 worker 就解不出来 → 401（用户症状：登录后随机 401，5 秒内必现）。
@@ -436,6 +444,81 @@ def next_free_port() -> int:
     return p
 
 
+def _port_file_path(user_id: str) -> str:
+    """portal 容器内视角的 .port 文件路径（bind mount 到 host 的 volumes/users/<uid>/.port）"""
+    return os.path.join(USER_DATA_BASE, user_id, PORT_FILE_NAME)
+
+
+def _read_pinned_port(user_id: str) -> int | None:
+    """读 .port 文件，校验是合法 int。失败返回 None（当成首次分配处理）。"""
+    try:
+        with open(_port_file_path(user_id)) as f:
+            raw = f.read().strip()
+        p = int(raw)
+        if 1 <= p <= 65535:
+            return p
+    except (FileNotFoundError, ValueError):
+        pass
+    except Exception as e:
+        app.logger.warning(f"read pinned port for {user_id[:8]}: {e}")
+    return None
+
+
+def _write_pinned_port(user_id: str, port: int) -> None:
+    """把固定端口写到 .port。atomic write via tmp+replace，多 worker 同 uid 写同一个值是幂等的。"""
+    try:
+        path = _port_file_path(user_id)
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(f"{port}\n")
+        os.replace(tmp, path)
+        # 防御：容器内 node 用户可能意外覆盖它；保险起见 chown 给 1000:1000
+        try:
+            os.chmod(path, 0o666)
+            os.chown(path, 1000, 1000)
+        except (PermissionError, OSError):
+            pass  # 端口 host 上是 root-owned 也无所谓——不需要 node 进程碰它
+    except Exception as e:
+        app.logger.error(f"write pinned port for {user_id[:8]}: {e}")
+
+
+def alloc_port_for_user(user_id: str) -> int:
+    """返回该用户稳定的 host port。
+
+    决策：
+      1) 读 .port 文件里保存的端口
+      2) 校验：port 在 [CLAUDE_PORT_MIN, CLAUDE_PORT_MAX] 内 + 当前未被其他容器占用
+      3) 通过 → 用之；不通过 → 当成首次，next_free_port() 并覆写 .port
+
+    注：调用前 find_user_container 已经返回 None（用户当前没有运行中容器），
+        所以 saved_port 不会是被用户自己的容器占着的情况——get_used_ports() 里
+        那条会触发"被其他用户占用"分支自动降级。
+    """
+    used = get_used_ports()
+    saved = _read_pinned_port(user_id)
+    if saved is not None and CLAUDE_PORT_MIN <= saved <= CLAUDE_PORT_MAX and saved not in used:
+        return saved
+    if saved is not None:
+        if not (CLAUDE_PORT_MIN <= saved <= CLAUDE_PORT_MAX):
+            app.logger.warning(
+                f"alloc_port: saved port {saved} for {user_id[:8]} "
+                f"out of range [{CLAUDE_PORT_MIN}, {CLAUDE_PORT_MAX}], re-allocating"
+            )
+        elif saved in used:
+            app.logger.warning(
+                f"alloc_port: saved port {saved} for {user_id[:8]} "
+                f"taken by another container, re-allocating"
+            )
+        else:
+            app.logger.warning(
+                f"alloc_port: saved port {saved} for {user_id[:8]} invalid, re-allocating"
+            )
+    p = next_free_port()
+    _write_pinned_port(user_id, p)
+    return p
+
+
 def find_user_container(user_id: str):
     """获取该用户的运行中容器，没有或状态不对返回 None。"""
     if not client or not is_valid_user_id(user_id):
@@ -517,7 +600,7 @@ def start_container(user_id: str, base_url: str, api_key: str,
     # entrypoint.sh 在容器内跑，看不到 host 视角路径；用容器内 bind target 路径
     container_cert_path = os.path.join(CLAUDE_CERT_DIR_BIND, CLAUDE_CERT_FILENAME)
     container_key_path  = os.path.join(CLAUDE_CERT_DIR_BIND, CLAUDE_KEY_FILENAME)
-    port = next_free_port()
+    port = alloc_port_for_user(user_id)
     password = user_id   # 用户能用 apiKey 推出来；本团队内部用，可接受
 
     container = client.containers.run(
@@ -1172,13 +1255,18 @@ def api_admin_containers():
             name = c.name
             uid  = name.replace("claude-", "", 1) if name.startswith("claude-") else name
             cached = users.get(uid, {})
+            actual_port = get_container_port(c)
+            pinned_port = _read_pinned_port(uid)
             items.append({
                 "user_id":        uid,
                 "display_name":   _read_user_meta(uid).get("display_name", ""),
                 "container_name": name,
                 "container_id":   c.id[:12],
                 "status":         c.status,
-                "port":           get_container_port(c),
+                "port":           actual_port,
+                # .port 文件里的固定端口；may be None（升级前用户没有 .port）。
+                # admin UI 用它对比实际绑定端口：一致 → ✓ 正常；不一致 → ⚠️ 冲突。
+                "pinned_port":    pinned_port,
                 "last_seen":      cached.get("last_seen"),
                 "created":        c.attrs.get("Created"),
                 # attrs["Config"]["Image"] 在容器启动时就已记录在 metadata 里，

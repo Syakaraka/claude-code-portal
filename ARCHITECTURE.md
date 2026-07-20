@@ -124,11 +124,13 @@ Portal 容器挂载宿主机 `/var/run/docker.sock`，获得完整 Docker 控制
 - 用户改 API Key → 新 user_id → 起新容器（旧容器可手动停）
 - 改 baseUrl/model（同一 apiKey）→ 需重启容器
 
-### 决策 4：每人一个容器，端口 8081+ 递增
+### 决策 4：每人一个容器，端口范围可配 + 每用户固定（§19）
 - 简单，无须 Nginx 反代
 - 文件天然隔离（每个容器独立 home 目录）
-- 4-8 个端口完全够用
-- Portal 自动跳转，用户不用记端口
+- 端口范围 `CLAUDE_PORT_MIN`–`CLAUDE_PORT_MAX`（默认 9901–9999，§15）；不够时调 `MAX_ACTIVE_CONTAINERS` 或扩范围
+- 端口**首次分配后固定**：`volumes/users/<uid>/.port` 存用户的 host port；rebuild / 重启 portal 都复用同一个端口（§19）。分配策略：先读 `.port` → 校验范围内+未被占用 → 用之；否则 `next_free_port()` 降级
+- Portal 给出 URL 后用户书签就行，不用记端口
+- admin 表格：实际端口后跟 ✓（pinned 一致）/ ⚠（pinned 被占已重摇）/ 无标记（升级前老用户无 .port）
 
 ### 决策 5：浏览器 localStorage 存凭据
 - 用户无需每次输入
@@ -308,8 +310,11 @@ CLAUDE_PORT_MAX       = _env_int("CLAUDE_PORT_MAX",   9999)
 补充：容器以 `user="node:node"`（uid/gid=1000）跑，host `volumes/users/<uid>/` 在 portal 端 `chown 1000:1000`（host 上 `thomas` 也是 uid/gid 1000，自动对齐） + chmod 0o777，node 用户可读写。Claude Code 扩展内的 native binary（`claude` CLI + `audio-capture.node`）由 `entrypoint.sh` 装完 vsix 后显式 `chmod +x`。
 
 ### 5.4 端口分配
-- Portal：80（用户主入口）
-- Claude 容器：`PORT_BASE` 起，按容器名顺序递增
+- Portal：`PORTAL_HOST_PORT`（默认 9900，对外）/ `PORTAL_CONTAINER_PORT`（容器内）
+- Claude 容器：`CLAUDE_PORT_MIN`–`CLAUDE_PORT_MAX`（默认 9901–9999），**每用户固定**（§19）：
+  - 首次启动 `next_free_port()` 从 MIN 扫到 MAX 找第一个空闲的，写到 `volumes/users/<uid>/.port`
+  - 后续 rebuild / portal 重启读 `.port` 复用；不合法（损坏 / 范围外 / 被其他用户占用）自动降级重摇并覆写
+  - `wipe_home` 会连带删 `.port`（语义：用户目录重置 → 端口也重置；想保留手动 cp 出去）
 
 ---
 
@@ -1004,11 +1009,108 @@ portal 编排的所有容器都得能在服务器端被管理（容器卡死 / �
 
 ---
 
+## 19. 每用户端口固定（`.port` 文件）
+
+### 动机
+原端口分配是"next free"——同一个用户每次 rebuild / portal 重启都可能落到不同端口。带来的问题：
+- 用户书签失效（`https://server:9905/` → rebuild 后变 9912）
+- 防火墙规则 / Nginx 反代 / 文档链接需要跟着变
+- 心理上不"专一"，每个用户应该有稳定身份
+
+引入**首次分配后固定**：每个用户的 host port 一旦分配就一直跟着他；rebuild / 重启 portal / 重建 claude 镜像都不变。
+
+### 设计原则
+- **简单持久化**：用文件 `volumes/users/<uid>/.port`，跟用户数据同寿（同一个目录）。副本即备份，跟着 `volumes/` 整体迁移
+- **零配置默认**：不需要建表 / 不需要全局 manifest；每个 `.port` 是独立的、单值文件
+- **失败降级**：`.port` 损坏 / 范围外 / 被其他用户占着 → 自动 `next_free_port()` 重摇并覆写，**不阻断**用户登录
+- **不破坏现有用户**：升级前已建的用户没 `.port` → 自动走 `next_free_port()`，首次重启后写入；过渡期没有数据迁移成本
+- **wipe_home 连带**：rebuild 勾"重置用户目录"会删 `.port`（语义一致：完全清空 = 重摇端口）；想保留端口仅重置内容就手动 `cp volumes/users/<uid>/.port /tmp/ && rebuild && cp /tmp/.port back/`
+- **不参与隔离**：端口是元数据，与 `user_id = sha256(apiKey)[:16]` 完全正交；切端口不会改变鉴权
+
+### 存储格式
+- 路径：`volumes/users/<uid>/.port`
+- 内容：`ASCII int + \n`（例 `9903\n`），由 `_write_pinned_port` 用 `<path>.tmp + os.replace` atomic 写
+- 权限：`0666` + chown `1000:1000`（继承自 `ensure_user_dir` 的递归 chown；容器内 node 进程理论上不会碰它，但防御一下）
+- portal 写、host 看；容器内看不到这文件（也没必要）
+
+### 核心函数 `alloc_port_for_user(user_id)`
+取代之前 `next_free_port()` 在 `start_container` 里的直接调用：
+
+```python
+def alloc_port_for_user(user_id: str) -> int:
+    used = get_used_ports()
+    saved = _read_pinned_port(user_id)
+    if saved is not None and MIN <= saved <= MAX and saved not in used:
+        return saved
+    # 降级日志：记到 portal log，admin 出问题能溯源
+    if saved is not None:
+        app.logger.warning(f"alloc_port: saved {saved} for {user_id[:8]} <reason>, re-allocating")
+    p = next_free_port()
+    _write_pinned_port(user_id, p)
+    return p
+```
+
+降级路径（每条都在 log 打 WARNING）：
+
+| `.port` 状态 | 行为 |
+|---|---|
+| 文件不存在 | 首次分配 → `next_free_port()` → 写回 |
+| 文件存在 + 合法 + 未被占用 | **用 saved**（主要路径）|
+| 文件存在 + 合法 + **被其他容器占用** | 重摇 + 覆写（WARNING: `taken by another container`）|
+| 文件存在 + 范围外（`saved < MIN` 或 `> MAX`）| 重摇 + 覆写（WARNING: `out of range`）|
+| 文件内容损坏（非 int / 空 / 多行）| 重摇 + 覆写（WARNING: `invalid`）|
+
+### 与现有路径的交互
+- **stop 容器**（admin stop）：不删 `.port`；下次 start 同端口
+- **admin delete**（不带勾）：不删 `.port`；下次 user 登录同端口
+- **admin delete + wipeHome**：删整个用户目录 → `.port` 一并消失；下次 user 登录新分配
+- **admin delete + wipeScratch**：只删 scratch；`.port` 保留
+- **rebuild（不带 reset_home）**：`.port` 保留 → 同端口
+- **rebuild + resetHome=True**：删整个用户目录 → 重摇
+- **portal 重启 / 容器重建**：`.port` 都在（host 卷持久化）→ 同端口
+
+### Admin UI
+`/api/admin/containers` 返回每个容器：
+- `port` — 实际绑定 host port（来自 `NetworkSettings.Ports.8080/tcp[0].HostPort`）
+- `pinned_port` — `.port` 文件里的值；可能 `null`（升级前老用户）
+
+表格 PORT 列渲染：
+```
+9905 ✓    jade 绿色 — 固定端口与实际一致（稳定）
+9905 ⚠    rust 红色 — 固定端口被占，已自动重摇（hover 看 .port=X）
+9905      无标记   — 升级前用户没有 .port（首次 stop+start 后会落到下次 free）
+—         灰色      — 容器 exited 没绑 port
+```
+CSS：`.port .pin-tag { display: inline-block; margin-left: 4px; font-weight: 700; }`，`.pin-ok { color: var(--jade); }` / `.pin-warn { color: var(--rust); }`
+
+### 与 §15 env vars 关系
+不改 `CLAUDE_PORT_MIN` / `CLAUDE_PORT_MAX` 语义（仍是分配范围）。**改了 MIN/MAX 后**：
+- 旧 `.port` 文件落新范围外 → 自动重摇到新范围内
+- 不需要任何迁移脚本
+
+### 内部并发性
+- `_read_pinned_port` → `_write_pinned_port` 是 read-modify-write；两个 worker 同时跑 alloc_for same uid 时可能都读到 saved、都判断合法、都返回 saved——OK 因为同一 uid 永远拿到同一端口（binding 在 docker 层竞争，第二个会失败）
+- `_write_pinned_port` 用 `tmp + os.replace`：单值写入本身原子，不会写出半截文件
+- 同 uid（= 同 apiKey）在 UI 上不会并发（只有一个用户点启动按钮）
+
+### 边界行为已通过测试矩阵覆盖
+1. 新用户 → `.port` 创建
+2. stop + start → 同端口
+3. rebuild → 同端口
+4. rebuild + resetHome → `.port` 被删，自动重摇（落在最低空闲）
+5. `.port` 在范围内 → 复用
+6. `.port` 落范围外 → 重摇
+7. `.port` 内容损坏 → 重摇
+8. `.port` 被其他用户占着 → 重摇并覆写
+
+---
+
 ## 附录 A：环境变量速查
 
 **Portal 容器**（从 `.env` 注入，详见 §15）：
 - 端口：`PORTAL_HOST_PORT` / `PORTAL_CONTAINER_PORT`（默认 9900）
-- Claude 端口范围：`CLAUDE_PORT_MIN` / `CLAUDE_PORT_MAX`（默认 9901-9999）
+- Claude 端口范围：`CLAUDE_PORT_MIN` / `CLAUDE_PORT_MAX`（默认 9901-9999）；每用户固定持久化到 `volumes/users/<uid>/.port`（§19）
+- 活跃容器上限：`MAX_ACTIVE_CONTAINERS`（默认 0 = 不限）
 - 路径：完整列表见 `.env.example`
 
 **Claude 容器（Portal 注入）**：
@@ -1058,3 +1160,4 @@ CLAUDE_WORKSPACE_FILE_NAME      ${WORKSPACE_FILE_NAME}
 | 2026-07-19 | **CA 安装步骤重写**：portal CA banner 步骤按 Windows 实际证书导入向导流程重写（Open File 安全警告 → 用户/本地 store 选择 → "Trusted Root Certification Authorities" → Finish → **Security Warning 必点 Yes** → 完全退出 Chrome），加了 Edge / Firefox / iOS Safari 兼容性说明（Firefox 单独 trust store 不跟系统，iOS Safari 没法用）|
 | 2026-07-19 | **端口 + 路径全可配置（§15）**：新增 .env，所有端口/路径/文件名 env-driven；默认 portal 9900 / claude 9901-9999（旧 80/8081 写为 fallback）；portal/app.py / docker-compose.yml / portal/Dockerfile / entrypoint.sh / .env.example 全部改完，验证 claude 容器启动后 `ports={"9901/tcp": ...}` 和内部 8080 正确 |
 | 2026-07-19 | **displayName 辅助标识（§18）**：用户可填一个名字（"张伟（产品组）"），纯辅助不参与 hash/隔离/路径；存 `volumes/users/<uid>/.portal_meta.json`；新接口 `/api/profile` PATCH（不动容器）；`/api/start` / `/api/rebuild` 接受 displayName 参数；admin 表格新增 NAME 列。后端 sanitize（白名单字符 + 40 字截断 + 去 control char），HTML escape 渲染防 XSS |
+| 2026-07-20 | **每用户端口固定（§19）**：首次分配后写到 `volumes/users/<uid>/.port`，rebuild / 重启 portal / 重建镜像都复用同端口；新函数 `alloc_port_for_user` 取代 `next_free_port()`，覆盖 5 条降级路径（破坏/范围外/占用/范围外/不存在）每条都 WARNING 日志；admin PORT 列加 ✓/⚠/无标记 反映 pinned vs 实际；wipeHome 连带删 .port（语义：完全重置）。实测 8 项矩阵全绿 |
