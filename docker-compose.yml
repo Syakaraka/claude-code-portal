@@ -49,9 +49,4 @@ services:
       # host 绝对路径（见 app.py），保证 docker daemon 解析到正确的 host 位置
       - ${HOST_VOLUMES_DIR}:${PORTAL_VOLUMES_MOUNT:-/volumes}
 
-      # Oracle Instant Client（claude 容器需要 libaio1 + 这个路径）
-      # host 路径（HOST_ORACLE_LIB_PATH，默认 /usr/lib/oracle/21/client64/lib）→
-      # 容器内路径（CLAUDE_ORACLE_BIND，默认 /opt/oracle/instantclient）
-      - ${HOST_ORACLE_LIB_PATH:-/usr/lib/oracle/21/client64/lib}:${CLAUDE_ORACLE_BIND:-/opt/oracle/instantclient}:ro
-
     restart: unless-stopped

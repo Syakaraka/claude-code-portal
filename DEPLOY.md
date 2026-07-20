@@ -66,7 +66,7 @@ sudo usermod -aG docker $USER    # 让自己能免 sudo 跑 docker
 ### 1.2 Linux 宿主机（Debian/Ubuntu 系）
 
 `vendor/code-server_4.129.0_amd64.deb` 是 amd64 Debian 包，`Dockerfile` 用 `apt-get
-install libaio1`（Oracle Instant Client 依赖）。这些都假设 **Linux + apt**。
+install` 装 `git` / `openssl` / `ca-certificates`。这些都假设 **Linux + apt**。
 
 新机器必须是 **Debian/Ubuntu**（或同源发行版如 Linux Mint、Pop!_OS）。
 **macOS / 原生 Windows 不行**——WSL2 算 Linux，可以。
@@ -96,17 +96,6 @@ docker compose version    # 验证 Compose v2
 `/home/thomas/workspace/code/claude_web_images`（在 `app.py` 和 `.env.example` 里）。
 **新机器一定要在 .env 里改成自己的路径**，否则 docker.run() 的 bind source
 会找不到。
-
-### 1.5 Oracle Instant Client（可选）
-
-`claude-code:local` 镜像里装了 `oracledb` npm 包并以 `LD_LIBRARY_PATH` 指向
-`/opt/oracle/instantclient`。如果你的 MCP 工具链没有用 Oracle DB，**完全可以
-不挂这个目录**——`docker-compose.yml` 里这一行是 `ro` 只读挂载，挂不上也不
-会影响 claude 容器启动（只是 oracledb 找不到库会 import 报错，不影响 Claude Code
-扩展本身）。
-
-`.env` 里 `HOST_ORACLE_LIB_PATH` 指向宿主机的 `libclntsh.so` 所在目录，新机器
-不需要装 Oracle Client（即使你用了也别装到默认路径，直接改 `.env` 即可）。
 
 ### 1.6 内部 CA 证书（迁移决策点）
 
@@ -142,7 +131,6 @@ Portal 每次启动如果 `volumes/certs/` 没有 CA 就生成一个全新的。
 | `volumes/` | ❌ `.gitignore` + `.dockerignore` | 全是运行时数据 |
 | `portal/__pycache__/` | ❌ | Python 编译产物 |
 | `console.log` | ❌ | 调试日志 |
-| `unified_db_mcp.ts` | ✅（如果有） | 当前未在流水线用，但保留 |
 | `Dockerfile` / `entrypoint.sh` / `docker-compose.yml` / `portal/` / `.env.example` / `ARCHITECTURE.md` / `DEPLOY.md` | ✅ | 这就是项目本体 |
 
 ---
@@ -288,9 +276,6 @@ ADMIN_PASSWORD=改成强密码
 # Flask session 密钥（强烈建议显式设；不设 portal 会从 HOST_PROJECT_DIR 派生，
 # 迁移后旧 cookie 会失效——但一般没人保留旧 cookie，所以问题不大）
 FLASK_SECRET=$(python3 -c "import secrets; print(secrets.token_urlsafe(48))")
-
-# 如果新机器没装 Oracle Client，保持默认就行（不会报错，只是 oracledb 用不了）
-HOST_ORACLE_LIB_PATH=/usr/lib/oracle/21/client64/lib
 ```
 
 ### Step 5：构建两个镜像

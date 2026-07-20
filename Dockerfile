@@ -5,8 +5,7 @@ FROM node:22-slim
 ARG APT_MIRROR=
 ARG NPM_REGISTRY=https://registry.npmmirror.com/
 
-# 1. 配置 APT 镜像源 (安装 git, ca-certificates 和 libaio1)
-# libaio1: Oracle Instant Client 必须的系统异步 IO 库
+# 1. 配置 APT 镜像源 (安装 git, ca-certificates)
 RUN if [ -n "${APT_MIRROR}" ]; then \
       sed -i "s|deb.debian.org|${APT_MIRROR}|g; s|security.debian.org|${APT_MIRROR}|g" \
         /etc/apt/sources.list \
@@ -18,18 +17,15 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         git \
         ca-certificates \
-        libaio1 \
         curl \
         openssl \
  && rm -rf /var/lib/apt/lists/*
 
-# 2. 配置 NPM 镜像源并安装 Claude Code 和 tsx
+# 2. 配置 NPM 镜像源并安装 Claude Code
 RUN npm config set registry "${NPM_REGISTRY}"
 
 RUN npm install -g \
         @anthropic-ai/claude-code@latest \
-        mcp-remote@latest \
-        tsx \
  && npm cache clean --force
 
 # 安装 code-server（浏览器里的 VS Code），启动后用户在终端里手动跑 `claude`
@@ -60,9 +56,9 @@ COPY --chown=node:node vendor/*.vsix /tmp/extensions/
 # KEY_FILE env var 让 entrypoint.sh 传给 code-server --cert / --cert-key。
 # 覆盖路径而不是改 /etc/code-server 目录属性，避免碰 root 拥有的目录。
 
-# 3. 准备工作区和 MCP 代码目录
-RUN mkdir -p /workspace /mcp_servers \
- && chown -R node:node /workspace /mcp_servers
+# 3. 准备工作区
+RUN mkdir -p /workspace \
+ && chown -R node:node /workspace
 
 # 自签 HTTPS 证书：VS Code webview 依赖 crypto.subtle，HTTP + 非 localhost 是
 # non-secure context → webview 不能渲染。自签证书让浏览器认为是 secure context，
@@ -76,25 +72,6 @@ RUN mkdir -p /etc/code-server \
     -subj "/CN=localhost" \
     -addext "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:0.0.0.0" \
  && chmod 644 /etc/code-server/key.pem /etc/code-server/cert.pem
-
-# 切换到 node 用户安装 MCP 依赖，避免权限问题
-# 之前阶段可能留下 root-owned 的 /home/node/.npm 缓存（npm install -g 阶段），
-# USER node 后 npm install 写不进去。先清掉确保干净。
-RUN rm -rf /home/node/.npm /home/node/.config 2>/dev/null || true
-USER node
-WORKDIR /mcp_servers
-
-# 4. 初始化 MCP 项目的 package.json 并安装依赖
-RUN npm init -y \
- && npm install --unsafe-perm \
-        @modelcontextprotocol/sdk \
-        zod \
-        mysql2 \
-        oracledb \
- && npm cache clean --force
-
-# 5. 将 TypeScript 脚本复制到容器中
-COPY --chown=node:node unified_db_mcp.ts /mcp_servers/unified_db_mcp.ts
 
 WORKDIR /workspace
 

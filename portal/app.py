@@ -86,7 +86,6 @@ HOST_USERS_DIR     = _env("HOST_USERS_DIR",     os.path.join(HOST_VOLUMES_DIR, "
 HOST_CODE_DIR      = _env("HOST_CODE_DIR",      os.path.join(HOST_VOLUMES_DIR, "code"))
 HOST_TEMPLATE_DIR  = _env("HOST_TEMPLATE_DIR",  os.path.join(HOST_VOLUMES_DIR, "node"))
 HOST_CERTS_DIR     = _env("HOST_CERTS_DIR",     os.path.join(HOST_VOLUMES_DIR, "certs"))
-HOST_ORACLE_LIB_PATH = _env("HOST_ORACLE_LIB_PATH", "/usr/lib/oracle/21/client64/lib")
 
 # === Portal 容器内 mount point（./volumes → /volumes 的右侧） ===
 PORTAL_VOLUMES_MOUNT = _env("PORTAL_VOLUMES_MOUNT", "/volumes")
@@ -100,9 +99,6 @@ USER_TEMPLATE   = os.path.join(CONTAINER_VOLUMES, "node")
 # host 视角（给 docker.run() 当 bind source 用）
 HOST_USER_DATA_BASE = HOST_USERS_DIR
 HOST_WORKSPACE_PATH = HOST_CODE_DIR
-
-# === Oracle Instant Client ===
-CLAUDE_ORACLE_BIND = _env("CLAUDE_ORACLE_BIND", "/opt/oracle/instantclient")
 
 # === Claude 容器内 bind target（必须与镜像内 WORKDIR / entrypoint 路径一致）
 #     改这些值需要重建 claude-code 镜像；当前默认值匹配 v4.129.0 镜像 ===
@@ -616,7 +612,6 @@ def start_container(user_id: str, base_url: str, api_key: str,
             "ANTHROPIC_DEFAULT_SONNET_MODEL": sonnet_model,
             "ANTHROPIC_DEFAULT_OPUS_MODEL":   opus_model,
             "PASSWORD":                       password,
-            "LD_LIBRARY_PATH":                CLAUDE_ORACLE_BIND,
             # 把运行时证书路径告诉 entrypoint.sh（覆盖默认的 localhost cert）
             # 用容器内 bind target 路径，entrypoint 在容器内只能看见这个
             "CERT_FILE":                      container_cert_path,
@@ -637,7 +632,6 @@ def start_container(user_id: str, base_url: str, api_key: str,
             # 独立 bind mount 不被 CLAUDE_HOME_BIND RW 覆盖，是因为它在 CLAUDE_HOME_BIND 下是子目录、
             # bind mount 是叶子挂载（leaf mount），优先级高于父目录 mount。
             os.path.join(host_user_dir, SCRATCH_DIR_NAME): {"bind": CLAUDE_SCRATCH_BIND, "mode": "rw"},
-            HOST_ORACLE_LIB_PATH:{"bind": CLAUDE_ORACLE_BIND, "mode": "ro"},
             # 证书目录 bind 进去：覆盖镜像里 CLAUDE_CERT_DIR_BIND（root:root 755）
             # 单文件 bind mount 在 docker 里会因 "not a directory" 失败（runc bug），
             # 所以 mount 整个目录，里面只放 CLAUDE_CERT_FILENAME / CLAUDE_KEY_FILENAME 两个文件

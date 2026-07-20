@@ -209,7 +209,6 @@ claude_web_images/
 ├── .env                        # （保留，可选）
 ├── .gitignore                  # 排除 vendor/（不入库）
 ├── .dockerignore               # 排除 volumes/ portal/ ARCHITECTURE.md
-├── unified_db_mcp.ts           # MCP 脚本（已有）
 ├── ARCHITECTURE.md             # ← 本文档
 ├── vendor/                     # ⚠️ 不入库，构建环境预下载的二进制
 │   ├── code-server_4.129.0_amd64.deb
@@ -239,7 +238,6 @@ claude_web_images/
 - `volumes/node/` - 用户 home 模板 → portal 容器内 `/volumes/node`
 - `volumes/users/<uid>/` - 每用户独立 home → portal 容器内 `/volumes/users/<uid>`
 - `/var/run/docker.sock` - Docker 控制通道
-- `/usr/lib/oracle/21/client64/lib` - Oracle Instant Client
 
 ---
 
@@ -276,8 +274,6 @@ WORKSPACE_PATH        = os.path.join(CONTAINER_VOLUMES, "code")
 USER_TEMPLATE         = os.path.join(CONTAINER_VOLUMES, "node")
 HOST_USER_DATA_BASE   = HOST_USERS_DIR               # host 视角
 HOST_WORKSPACE_PATH   = HOST_CODE_DIR
-HOST_ORACLE_LIB_PATH  = _env("HOST_ORACLE_LIB_PATH",  "/usr/lib/oracle/21/client64/lib")
-CLAUDE_ORACLE_BIND    = _env("CLAUDE_ORACLE_BIND",    "/opt/oracle/instantclient")
 CLAUDE_IMAGE_NAME     = _env("CLAUDE_IMAGE_NAME",     "claude-code:local")
 PORTAL_LABEL          = _env("PORTAL_LABEL",          "managed-by")
 CLAUDE_PORT_MIN       = _env_int("CLAUDE_PORT_MIN",   9901)
@@ -300,7 +296,6 @@ CLAUDE_PORT_MAX       = _env_int("CLAUDE_PORT_MAX",   9999)
 | `ANTHROPIC_DEFAULT_SONNET_MODEL` | 用户填（`sonnetModel`） | 网关路由 sonnet 请求用 |
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | 用户填（`haikuModel`） | 网关路由 haiku 请求用 |
 | `PASSWORD` | Portal 注入 | code-server 登录密码（= user_id，确定性）|
-| `LD_LIBRARY_PATH` | Portal 注入 | Oracle 路径 |
 | `CERT_FILE` / `KEY_FILE` | Portal 注入 | 用户专属 HTTPS 证书路径（portal 用内部 CA 签发）|
 
 > 浏览器侧只让用户填 **3 个模型名**（`opusModel` / `sonnetModel` / `haikuModel`）；portal 内部把 `opusModel` 同时复制到 `ANTHROPIC_MODEL` 和 `ANTHROPIC_DEFAULT_OPUS_MODEL` 两个 env 里（兼容不同版本的 Claude Code）。
@@ -483,7 +478,6 @@ portal 内部把 `opusModel` 复制到 `ANTHROPIC_MODEL`（兼容老版 Claude C
 | 容器清理靠手动 | Phase 3 自动清理 |
 | HTTPS 用内部 CA，浏览器首次必须装 CA | §13 流程，login.html 引导 + 强制完全退出浏览器再开 |
 | 改 API Key 不回收旧容器 | 待实现，可加 DELETE /api/users |
-| oracle 路径硬编码 | 后续改 env 注入 |
 | phase 1 启动容器阻塞请求（同步） | 后续可改异步 + WebSocket 推送状态 |
 | Portal 单点 | 后续可两实例 + keepalived（内网场景不必要） |
 | vendor 文件需手动维护 | 写脚本定期检查版本更新；CI 可加自动下载 |
@@ -790,7 +784,7 @@ os.chmod(scratch_dir, 0o777)
 让部署者只改 `.env` 就能切换：
 - Portal HTTP 端口（默认 9900，避开 80 端口冲突）
 - Claude 容器端口范围（默认 9901-9999，避开 8081）
-- 所有 host 路径（项目根、volumes 子目录、Oracle lib、Docker socket）
+- 所有 host 路径（项目根、volumes 子目录、Docker socket）
 - 所有 claude 容器内 bind target（⚠️ 改这些要 rebuild 镜像）
 
 `.env` 不入库（见 `.gitignore`），`.env.example` 文档化全部可配置项。
@@ -812,7 +806,6 @@ os.chmod(scratch_dir, 0o777)
 | `HOST_PROJECT_DIR` | `/home/thomas/workspace/code/claude_web_images` | 项目根（开发机路径） |
 | `HOST_VOLUMES_DIR` | `${HOST_PROJECT_DIR}/volumes` | volumes 总目录 |
 | `HOST_USERS_DIR` / `HOST_CODE_DIR` / `HOST_TEMPLATE_DIR` / `HOST_CERTS_DIR` | `${HOST_VOLUMES_DIR}/{users,code,node,certs}` | 四个子目录 |
-| `HOST_ORACLE_LIB_PATH` | `/usr/lib/oracle/21/client64/lib` | Oracle Instant Client host 路径 |
 | `HOST_DOCKER_SOCK` | `/var/run/docker.sock` | Docker socket（macOS 改这里） |
 
 #### C. Portal 容器内 mount point
@@ -829,7 +822,6 @@ os.chmod(scratch_dir, 0o777)
 | `CLAUDE_HOME_BIND` | `/home/node` | Dockerfile USER node |
 | `CLAUDE_SCRATCH_BIND` | `/home/node/scratch` | app.py bind target + entrypoint.sh |
 | `CLAUDE_CERT_DIR_BIND` | `/etc/code-server` | Dockerfile mkdir + cert gen |
-| `CLAUDE_ORACLE_BIND` | `/opt/oracle/instantclient` | docker-compose + app.py |
 | `CLAUDE_INTERNAL_PORT` | 8080 | Dockerfile CMD `--bind-addr` + app.py `ports=` |
 
 #### E. 镜像 / 标签
@@ -855,7 +847,7 @@ os.chmod(scratch_dir, 0o777)
 
 | 文件 | 读什么 env |
 |------|------------|
-| `docker-compose.yml` | `PORTAL_*`, `CLAUDE_PORT_*`, `HOST_DOCKER_SOCK`, `HOST_VOLUMES_DIR`, `PORTAL_VOLUMES_MOUNT`, `HOST_ORACLE_LIB_PATH`, `CLAUDE_ORACLE_BIND` |
+| `docker-compose.yml` | `PORTAL_*`, `CLAUDE_PORT_*`, `HOST_DOCKER_SOCK`, `HOST_VOLUMES_DIR`, `PORTAL_VOLUMES_MOUNT` |
 | `portal/Dockerfile` | `PORTAL_CONTAINER_PORT`（ARG，build time） |
 | `portal/app.py` | 全部 host 路径 + claude 容器路径 + 端口 + 文件名 |
 | `entrypoint.sh` | `CLAUDE_WORKSPACE_BIND`, `CLAUDE_HOME_BIND`, `CLAUDE_SCRATCH_BIND`, `CLAUDE_SCRATCH_DIR_NAME`, `CLAUDE_WORKSPACE_FILE_NAME`, `CERT_FILE`, `KEY_FILE`（后两个由 portal 注入绝对路径） |
@@ -1122,7 +1114,6 @@ ANTHROPIC_DEFAULT_OPUS_MODEL    用户填（opusModel）
 ANTHROPIC_DEFAULT_SONNET_MODEL  用户填（sonnetModel）
 ANTHROPIC_DEFAULT_HAIKU_MODEL   用户填（haikuModel）
 PASSWORD                        = user_id（确定性，见决策 8）
-LD_LIBRARY_PATH                 ${CLAUDE_ORACLE_BIND}
 CERT_FILE                       ${CLAUDE_CERT_DIR_BIND}/${CLAUDE_CERT_FILENAME}
 KEY_FILE                        ${CLAUDE_CERT_DIR_BIND}/${CLAUDE_KEY_FILENAME}
 CLAUDE_WORKSPACE_BIND           ${CLAUDE_WORKSPACE_BIND}
@@ -1161,3 +1152,4 @@ CLAUDE_WORKSPACE_FILE_NAME      ${WORKSPACE_FILE_NAME}
 | 2026-07-19 | **端口 + 路径全可配置（§15）**：新增 .env，所有端口/路径/文件名 env-driven；默认 portal 9900 / claude 9901-9999（旧 80/8081 写为 fallback）；portal/app.py / docker-compose.yml / portal/Dockerfile / entrypoint.sh / .env.example 全部改完，验证 claude 容器启动后 `ports={"9901/tcp": ...}` 和内部 8080 正确 |
 | 2026-07-19 | **displayName 辅助标识（§18）**：用户可填一个名字（"张伟（产品组）"），纯辅助不参与 hash/隔离/路径；存 `volumes/users/<uid>/.portal_meta.json`；新接口 `/api/profile` PATCH（不动容器）；`/api/start` / `/api/rebuild` 接受 displayName 参数；admin 表格新增 NAME 列。后端 sanitize（白名单字符 + 40 字截断 + 去 control char），HTML escape 渲染防 XSS |
 | 2026-07-20 | **每用户端口固定（§19）**：首次分配后写到 `volumes/users/<uid>/.port`，rebuild / 重启 portal / 重建镜像都复用同端口；新函数 `alloc_port_for_user` 取代 `next_free_port()`，覆盖 5 条降级路径（破坏/范围外/占用/范围外/不存在）每条都 WARNING 日志；admin PORT 列加 ✓/⚠/无标记 反映 pinned vs 实际；wipeHome 连带删 .port（语义：完全重置）。实测 8 项矩阵全绿 |
+| 2026-07-20 | **精简 claude-code 镜像**：移除 `unified_db_mcp.ts`（MySQL+Oracle 只读 SQL MCP）+ `mysql2`/`oracledb`/`@modelcontextprotocol/sdk`/`zod`/`mcp-remote`/`tsx` npm 包 + Dockerfile 里的 `libaio1` apt 依赖 + portal/app.py 里的 Oracle Instant Client bind / `LD_LIBRARY_PATH` env；对应 .env.example / .env / docker-compose.yml / DEPLOY.md / 附录 B 全部同步清理。镜像从 793MB → 782MB（压缩）；运行时不再 bind `/opt/oracle/instantclient` ~200MB 内存/容器也省下。保留 claude-code npm vsix @ 2.1.215 + code-server 4.129.0 + Node 22.23.1 LTS（Jod）—— 都是当前最新。`git log` 这次大改：源码/配置/文档全部统一推进；存量用户 home 目录里的旧 mcp 残留不影响新容器启动（每容器重建后都用新 entrypoint）|
