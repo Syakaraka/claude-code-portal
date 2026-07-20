@@ -74,7 +74,7 @@ http://server/  ─────►  [Claude Portal :80]
       │ /home/node     │     • /home/node/scratch (per-user RW 临时区)
       │   ├── scratch  │
       │   └── .local/  │
-      │       share/code-server/  ← portal 注入 cert + argv.json + languagepacks.json
+      │       share/code-server/  ← portal 注入 cert + argv.json + (zh-cn)languagepacks.json
       └────────────────┘
 ```
 
@@ -372,8 +372,10 @@ CLAUDE_PORT_MAX       = _env_int("CLAUDE_PORT_MAX",   9999)
    - Claude Code 扩展（84MB）~ 3 秒
    - 中文语言包（600KB）~ 1 秒
 [3] rm /tmp/extensions（省内存）
-[4] exec code-server "$@"（让 code-server 接管 PID 1）
-[5] code-server 监听 0.0.0.0:8080，应用 locale=zh-hans 加载已装中文包
+[4] 写 User/settings.json + User/argv.json + <userDataDir>/languagepacks.json
+   （zh-cn 兜底，让 vscode 内核启动时 NLS 直接命中中文包；详见 §11.4）
+[5] exec code-server "$@"（让 code-server 接管 PID 1）
+[6] code-server 监听 0.0.0.0:8080，应用 locale=zh-cn 加载已装中文包
 ```
 
 ---
@@ -452,7 +454,7 @@ portal 内部把 `opusModel` 复制到 `ANTHROPIC_MODEL`（兼容老版 Claude C
 - [x] **Claude Code 镜像优化**（见 §11）：
   - [x] 预装 Claude Code VS Code 扩展（2.1.214 linux-x64）
   - [x] 预装简体中文语言包（1.128.x，兼容 code-server 自带 VS Code 1.129.0）
-  - [x] UI 默认中文（`locale: zh-hans`，含 argv.json + languagepacks.json 兜底）
+  - [x] UI 默认中文（`locale: zh-cn`，含 argv.json + userDataDir/languagepacks.json 兜底）
   - [x] code-server 默认打开 multi-root `/home/node/workspace.code-workspace`（/workspace + scratch）
 - [x] **4 个 ANTHROPIC 模型 env vars**（§5.3）
 - [x] **Multi-root workspace**（决策 11，per-user scratch 独立 bind）
@@ -482,7 +484,7 @@ portal 内部把 `opusModel` 复制到 `ANTHROPIC_MODEL`（兼容老版 Claude C
 | Portal 单点 | 后续可两实例 + keepalived（内网场景不必要） |
 | vendor 文件需手动维护 | 写脚本定期检查版本更新；CI 可加自动下载 |
 | code-server 扩展市场无法切换 | v4.129.0 已移除 config.yaml 支持，等上游修复或升级 |
-| UI 中文靠 entrypoint 手动写 languagepacks.json 兜底 | code-server 4.x exthost 加载 bug，等上游修复 |
+| UI 中文靠 entrypoint 手动写 `<userDataDir>/languagepacks.json` 兜底（路径 + key 都是 vp()/KW() 实际读取的格式） | code-server 4.x exthost 加载 bug 仍可能让 languagePacks service 不写 file；目前 manual override 顶住，等上游修复后可去掉这个兜底 |
 
 ---
 
@@ -567,8 +569,8 @@ CMD ["--bind-addr", "0.0.0.0:8080", "--auth", "password", "--locale", "zh-cn", "
 入口脚本 (`entrypoint.sh`) 流程（详见 entrypoint.sh 头部注释）：
 1. 装 /tmp/extensions/*.vsix（Claude Code + 中文语言包）→ chmod +x native binary
 2. 写 `User/settings.json`：禁用 workspace trust + 预信任 Claude Code / MS-CEINTL publisher
-3. 写 `User/argv.json`：`{"locale": "zh-cn"}`（vscode 内核按 file > cli > cookie > accept-language 决定 locale，cli flag 不透传）
-4. 写 `User/languagepacks.json`：手动指向 zh-hans 扩展的 `translations/main.i18n.json`（绕开 exthost 不加载扩展导致 languagePacks service 不写文件的 bug）
+3. 写 `User/argv.json`：`{"locale": "zh-cn"}`（argvResource = appSettingsHome + "argv.json" = userDataDir + "User/argv.json"；vscode 内核按 file > cli > cookie > accept-language 决定 locale，cli flag 不透传）
+4. 写 `<userDataDir>/languagepacks.json`（**根目录，不是 User/ 子目录**）：`{"zh-cn": {hash, translations.vscode: <abs path>}}` —— zp() (server-main.js) 在 NLS 启动时读这个文件 + KW() 按 locale 字符串作 key 查条目 → 找到就加载中文包，找不到就 fallback 英文。entrypoint 手动写是为了兜底：code-server 4.x 在某些场景下不会把中文扩展加载到 exthost → languagePacks service 不写 file → UI 永远英文
 5. 生成 multi-root `~/workspace.code-workspace`（/workspace + ~/scratch 两个根，详见 §决策 11）
 6. 拼 `--cert/--cert-key`（从 `CERT_FILE` / `KEY_FILE` env 拿）
 7. `exec code-server "$@"`（用 exec 让 code-server 接管 PID 1，entrypoint 退出）
@@ -591,7 +593,7 @@ docker run --rm -u 0 --entrypoint /usr/local/bin/entrypoint.sh claude-code:local
 [entrypoint] chmod +x: audio-capture.node
 [entrypoint] wrote User/settings.json (workspace trust disabled, publishers pre-trusted)
 [entrypoint] wrote User/argv.json (locale=zh-cn)
-[entrypoint] wrote User/languagepacks.json (manual override, ext=...)
+[entrypoint] wrote /home/node/.local/share/code-server/languagepacks.json (zh-cn manual override, ext=...)
 [entrypoint] wrote workspace.code-workspace (multi-root: Workspace + Scratch)
 [entrypoint] WARN: cert not found at $CERT_FILE / $KEY_FILE, starting without HTTPS
 [entrypoint] starting code-server: code-server --bind-addr 0.0.0.0:8089 --auth password /home/node/workspace.code-workspace
@@ -1143,7 +1145,8 @@ CLAUDE_WORKSPACE_FILE_NAME      ${WORKSPACE_FILE_NAME}
 | 2026-07-19 | **Multi-root workspace**（决策 11）：entrypoint.sh 生成 $HOME/workspace.code-workspace，包含 /workspace + $HOME/scratch 两个根；/workspace 放第一位保持 Claude Code 默认 CWD；scratch 是独立 bind `users/<uid>/scratch → /home/node/scratch`，per-user 隔离 |
 | 2026-07-19 | **内部 CA + 用户 HTTPS 证书**（§13）：portal 自签 Claude Code Portal Internal CA，每次 /api/start 用 Host SAN 签用户 cert → bind 进容器；self-signed 不行因为 Chrome Service Worker 严格校验；用户首次访问在 /install-cert 下载 CA 装到系统 trust store |
 | 2026-07-19 | **权限映射（§14）**：portal 端所有创建的目录都 chown 1000:1000 + chmod 0777（thomas 主机用户 = node 容器用户，都是 uid/gid 1000）；container 端不能 chmod root-owned 目录所以 portal 端做 |
-| 2026-07-19 | **VS Code 中文 UI 兜底**：entrypoint.sh 手动写 User/languagepacks.json 指向中文包扩展的 translations/main.i18n.json；code-server 4.x 在某些场景下不会把中文扩展加载到 exthost → languagePacks service 不写 file → UI 永远英文（手动写绕开）|
+| 2026-07-19 | **VS Code 中文 UI 兜底**：entrypoint.sh 手动写 `User/languagepacks.json` 指向中文包扩展的 `translations/main.i18n.json`；code-server 4.x 在某些场景下不会把中文扩展加载到 exthost → languagePacks service 不写 file → UI 永远英文（手动写绕开）。**注：2026-07-20 发现这个路径是错的**——zp() 读的是 `<userDataDir>/languagepacks.json`（根目录），不是 `User/` 子目录；且 key 当时写成了扩展 ID 而不是 locale 字符串 → 这个兜底其实从来都没生效，新用户容器默认就是英文；详见 2026-07-20 修复条目 |
+| 2026-07-20 | **新容器默认中文 UI 修复**：entrypoint.sh 写 `languagepacks.json` 的路径 + key 改成正确的——路径从 `User/languagepacks.json` 改到 `<userDataDir>/languagepacks.json`（根目录，zp() 实际读取的位置），key 从扩展 ID `"ms-ceintl.vscode-language-pack-zh-hans"` 改成 locale 字符串 `"zh-cn"`（KW() 按 locale 查 key，找不到会回退 `zh-cn` → `zh`），`translations.vscode` 用绝对路径（zp() 检查 file exists）。新镜像 hash `61de3527`，浏览器实测默认中文 UI 生效。`User/argv.json` 路径本来就是对的（appSettingsHome 解析），保持不动 |
 | 2026-07-19 | **端口 + 路径全可配置**（§15）：portal 9900 / claude 9901-9999 默认值；HOST_* / CLAUDE_*_BIND / CLAUDE_*_FILENAME 全 env-driven；改 bind 路径要 rebuild claude-code 镜像，其他纯 runtime |
 | 2026-07-19 | **白主题门户 + 2 步向导 + 管理员面板**（§16 / §17）：portal/login.html 改为白色 workshop-ticket 美学 + 步骤导轨（01/02），step1 输入凭据 → step2 容器 URL + 密码 + 打开；用户改任意字段可"回到上一步"→ 自动检测改动 → 走 /api/rebuild 重建容器（带 reset_home / reset_scratch 选项）；独立 /admin 页面 + ADMIN_PASSWORD 鉴权 → 列出所有用户容器，可停止 / 删除（可选清数据）|
 | 2026-07-19 | **admin 鉴权机制修正**：原方案用 in-memory `_admin_tokens: set` → gunicorn 多 worker 下 token 不共享；改为 Flask 签名 cookie session（无状态），同时强制 `FLASK_SECRET` 跨 worker 一致（`HOST_PROJECT_DIR` 派生兜底）—— 根除了"登录后 5 秒自动过期"症状 |

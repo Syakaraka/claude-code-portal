@@ -11,6 +11,8 @@
 #          否则 Restricted Mode 下它们不能激活，UI 永远英文
 #   4. 写 User/argv.json（locale=zh-cn，code-server 的 --locale CLI 不会透传给 vscode 内核，
 #      vscode 实际读 argv.json > cli flag > cookie > accept-language 这个顺序）
+#      写 userDataDir/languagepacks.json（zh-cn → ms-ceintl 扩展的 main.i18n.json 绝对路径，
+#      zp() 用 languageId 作 key 查这里；写错位置或写错 key → UI 永远英文）
 #   5. 生成 multi-root workspace.code-workspace（/workspace 共享代码库 +
 #      /home/node/scratch per-user 临时区）作为默认打开对象，让 Claude Code 的 CWD
 #      保持在 /workspace 但 VS Code 同时能浏览/编辑 scratch 区
@@ -84,6 +86,7 @@ fi
 # 只透传 help/version/port/log 四个字段）。vscode 内核是按 argv.json > cli flag >
 # cookie > accept-language 这个顺序决定 locale 的（server-main.js _handleRoot）。
 # CLI 第一个优先级没生效，但 argv.json 是 file-based，code-server 自己读 —— 写好就行。
+# argvResource = appSettingsHome + "argv.json" = userDataDir + "User/argv.json"。
 # 已存在则不动（用户可能手动改过语言）
 cs_argv="$cs_user_dir/argv.json"
 if [ ! -f "$cs_argv" ]; then
@@ -95,21 +98,23 @@ EOF
     echo "[entrypoint] wrote User/argv.json (locale=zh-cn)"
 fi
 
-# 写 languagepacks.json：vscode 启动时按这个文件加载语言包翻译。
-# 关键问题：ms-ceintl.vscode-language-pack-zh-hans 扩展虽然装了，但 code-server 4.x
-# 在某些场景下不会把它加载到任何 exthost 进程（exthost log 里看不到这个 extension 激活），
-# → languagePacks service 永远不写 languagepacks.json → UI 永远英文。
-# 绕开：自己写 languagepacks.json，最小内容指向扩展的 translations/main.i18n.json。
-# zp() (server-main.js 里的 generateNls) 读这个文件：要求 hash 是 string + translations
-# 存在 + translations.vscode 是个存在的文件路径，否则 fallback 默认英文。
+# 写 languagepacks.json：vscode 启动时 zp() 读 <userDataDir>/languagepacks.json
+# （注意是 userDataDir 根，不是 User/ 子目录）按这里指向的翻译文件加载中文 UI。
+# 关键点：key 必须是语言 ID（"zh-cn"），不是扩展 ID —— KW(i, locale) 拿 user locale
+# 当 key 去查对象，没查到就回退英文。
+# 路径里也得用绝对路径（zp() 检查 file exists，扩展内相对路径解析不到）。
+# ms-ceintl.vscode-language-pack-zh-hans 扩展虽然装了，但 code-server 4.x 在某些场景
+# 不会把它加载到 exthost（languagePacks service 不会触发 update() 写文件），
+# → 这里手动写一份兜底，code-server 启动后会自己用 hash-tagged 版本覆盖（同样能用）。
 # 已存在则不动（用户可能手动改过语言）
-cs_langpacks="$cs_user_dir/languagepacks.json"
+cs_data_dir="$HOME/.local/share/code-server"
+cs_langpacks="$cs_data_dir/languagepacks.json"
 if [ ! -f "$cs_langpacks" ]; then
-    zh_ext=$(ls -d "$HOME/.local/share/code-server/extensions"/ms-ceintl.vscode-language-pack-zh-hans-* 2>/dev/null | head -1)
+    zh_ext=$(ls -d "$cs_data_dir/extensions"/ms-ceintl.vscode-language-pack-zh-hans-* 2>/dev/null | head -1)
     if [ -n "$zh_ext" ] && [ -f "$zh_ext/translations/main.i18n.json" ]; then
         cat > "$cs_langpacks" <<EOF
 {
-    "ms-ceintl.vscode-language-pack-zh-hans": {
+    "zh-cn": {
         "hash": "manual",
         "translations": {
             "vscode": "$zh_ext/translations/main.i18n.json"
@@ -117,9 +122,9 @@ if [ ! -f "$cs_langpacks" ]; then
     }
 }
 EOF
-        echo "[entrypoint] wrote User/languagepacks.json (manual override, ext=$zh_ext)"
+        echo "[entrypoint] wrote $cs_langpacks (zh-cn manual override, ext=$zh_ext)"
     else
-        echo "[entrypoint] WARN: zh-hans language pack not found at \$HOME/.local/share/code-server/extensions/ms-ceintl.*"
+        echo "[entrypoint] WARN: zh-hans language pack not found at \$cs_data_dir/extensions/ms-ceintl.*"
     fi
 fi
 
