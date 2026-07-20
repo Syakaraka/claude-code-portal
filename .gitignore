@@ -6,6 +6,7 @@
 /vendor/*.bak
 /console.log
 *.tar.gz
+*.tar
 *.pyc
 *.pyo
 .DS_Store
