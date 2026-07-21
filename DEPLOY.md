@@ -172,9 +172,9 @@ tar czf user-data.tar.gz volumes/users/
 mkdir -p vendor
 cd vendor
 
-# 1) Claude Code 扩展 (Linux x64, v2.1.215)
-curl -L -o Anthropic.claude-code-2.1.215@linux-x64.vsix \
-  https://openvsx.eclipsecontent.org/Anthropic/claude-code/linux-x64/2.1.215/Anthropic.claude-code-2.1.215@linux-x64.vsix
+# 1) Claude Code 扩展 (Linux x64, v2.1.216)
+curl -L -o Anthropic.claude-code-2.1.216@linux-x64.vsix \
+  https://openvsx.eclipsecontent.org/Anthropic/claude-code/linux-x64/2.1.216/Anthropic.claude-code-2.1.216@linux-x64.vsix
 
 # 2) VS Code 中文语言包 (v1.129.0，跟 code-server 内核版本对齐)
 curl -L -o MS-CEINTL.vscode-language-pack-zh-hans-1.129.0.vsix \

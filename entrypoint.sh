@@ -98,31 +98,56 @@ EOF
     echo "[entrypoint] wrote User/argv.json (locale=zh-cn)"
 fi
 
-# 写 languagepacks.json：vscode 启动时 zp() 读 <userDataDir>/languagepacks.json
-# （注意是 userDataDir 根，不是 User/ 子目录）按这里指向的翻译文件加载中文 UI。
-# 关键点：key 必须是语言 ID（"zh-cn"），不是扩展 ID —— KW(i, locale) 拿 user locale
-# 当 key 去查对象，没查到就回退英文。
-# 路径里也得用绝对路径（zp() 检查 file exists，扩展内相对路径解析不到）。
-# ms-ceintl.vscode-language-pack-zh-hans 扩展虽然装了，但 code-server 4.x 在某些场景
-# 不会把它加载到 exthost（languagePacks service 不会触发 update() 写文件），
-# → 这里手动写一份兜底，code-server 启动后会自己用 hash-tagged 版本覆盖（同样能用）。
+# 写 languagepacks.json：vscode 启动时 zp() (server-main.js 的 generateNls) 按
+# 这里指向的翻译文件加载中文 UI；KW(r, locale) 拿 user locale 作 key 查对象。
+# 路径写错（写到 User/ 下）或 key 写错（用扩展 id 不用 "zh-cn"）→ UI 永远英文。
+#
+# 必填字段（来自 createLanguagePacksFromExtension @ server-main.js）：
+#   - key: locale id (如 "zh-cn")，不是扩展 id
+#   - path: <userDataDir>/languagepacks.json（注意不是 User/ 子目录）
+#   - hash: 任意字符串（generateNls 只读文件存在性，不校验 hash 内容）
+#   - translations: { vscode: <绝对路径> }（generateNls 检查 file exists）
+#   - extensions: [ { extensionIdentifier: { id: "..." }, version: "..." } ]
+#     —— getInstalledLanguages (server-main.js:680345) 用
+#        i.extensions[0].extensionIdentifier.id 组装 QuickPick 项，缺这个字段
+#        → 抛 TypeError: Cannot read properties of undefined (reading '0')
+#        → 阻塞 scanExtensions → _resolveExtensionsDefault 流程
+#        → anthropic.claude-code 等第三方扩展被过滤掉、图标永远不出现
+#   - label: localizedLanguageName ?? languageName（createQuickPickItem 用）
+# 缺 extensions 或 label 时 code-server 4.129.0 在 scanExtensions 阶段抛错，
+# 不只是语言包加载失败，会让整个扩展列表都解析不出来。
 # 已存在则不动（用户可能手动改过语言）
 cs_data_dir="$HOME/.local/share/code-server"
 cs_langpacks="$cs_data_dir/languagepacks.json"
 if [ ! -f "$cs_langpacks" ]; then
     zh_ext=$(ls -d "$cs_data_dir/extensions"/ms-ceintl.vscode-language-pack-zh-hans-* 2>/dev/null | head -1)
-    if [ -n "$zh_ext" ] && [ -f "$zh_ext/translations/main.i18n.json" ]; then
+    if [ -n "$zh_ext" ] && [ -f "$zh_ext/translations/main.i18n.json" ] && [ -f "$zh_ext/package.json" ]; then
+        # 从 package.json 动态读 version + contributes.localizations[0] 的 label
+        zh_version=$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "$zh_ext/package.json" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+        zh_label=$(grep -oE '"localizedLanguageName"[[:space:]]*:[[:space:]]*"[^"]+"' "$zh_ext/package.json" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+        [ -z "$zh_label" ] && zh_label=$(grep -oE '"languageName"[[:space:]]*:[[:space:]]*"[^"]+"' "$zh_ext/package.json" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+        # 组装 extensionIdentifier.id = "${publisher}.${name}"（code-server 装扩展时 lower-case）
+        zh_pub=$(grep -oE '"publisher"[[:space:]]*:[[:space:]]*"[^"]+"' "$zh_ext/package.json" | head -1 | sed 's/.*"\([^"]*\)"$/\1/' | tr '[:upper:]' '[:lower:]')
+        zh_name=$(grep -oE '"name"[[:space:]]*:[[:space:]]*"[^"]+"' "$zh_ext/package.json" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+        zh_ext_id="${zh_pub}.${zh_name}"
         cat > "$cs_langpacks" <<EOF
 {
     "zh-cn": {
         "hash": "manual",
+        "extensions": [
+            {
+                "extensionIdentifier": { "id": "$zh_ext_id" },
+                "version": "$zh_version"
+            }
+        ],
+        "label": "$zh_label",
         "translations": {
             "vscode": "$zh_ext/translations/main.i18n.json"
         }
     }
 }
 EOF
-        echo "[entrypoint] wrote $cs_langpacks (zh-cn manual override, ext=$zh_ext)"
+        echo "[entrypoint] wrote $cs_langpacks (zh-cn manual override, ext=$zh_ext, id=$zh_ext_id, ver=$zh_version)"
     else
         echo "[entrypoint] WARN: zh-hans language pack not found at \$cs_data_dir/extensions/ms-ceintl.*"
     fi
