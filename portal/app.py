@@ -1362,6 +1362,130 @@ def api_admin_delete():
     return jsonify({"ok": True, "wiped": wiped})
 
 
+def _read_creds_from_container_env(container):
+    """从已有容器的 attrs["Config"]["Env"] 提取凭据。
+
+    跟用户自己 rebuild 的关键区别：admin 不知道 apiKey/baseUrl/models，
+    但容器启动时这些值写进了 env（start_container() 在 environment= 里设的）。
+    docker inspect 不发网络请求就拿得到 attrs —— 镜像被 rmi 也不影响。
+    返回 (base_url, api_key, opus, sonnet, haiku)，缺任意一个就抛 RuntimeError。
+    """
+    env_list = (container.attrs.get("Config") or {}).get("Env") or []
+    env = {}
+    for kv in env_list:
+        if "=" in kv:
+            k, v = kv.split("=", 1)
+            env[k] = v
+    base_url = env.get("ANTHROPIC_BASE_URL", "").strip()
+    api_key  = env.get("ANTHROPIC_API_KEY",  "").strip()
+    opus     = env.get("ANTHROPIC_DEFAULT_OPUS_MODEL",   "").strip() \
+            or env.get("ANTHROPIC_MODEL", "").strip()
+    sonnet   = env.get("ANTHROPIC_DEFAULT_SONNET_MODEL", "").strip()
+    haiku    = env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL",  "").strip()
+    missing = [n for n, v in (
+        ("baseUrl", base_url), ("apiKey", api_key),
+        ("opus", opus), ("sonnet", sonnet), ("haiku", haiku),
+    ) if not v]
+    if missing:
+        raise RuntimeError(
+            f"容器 env 缺关键字段: {', '.join(missing)}。"
+            f"（可能是早期版本启动的容器，或容器已被外部修改 env）"
+        )
+    return base_url, api_key, opus, sonnet, haiku
+
+
+@app.route("/api/admin/rebuild", methods=["POST"])
+def api_admin_rebuild():
+    """管理员强制重建某个用户的容器，复用用户已有的 apiKey/baseUrl/models。
+
+    和用户自己 rebuild 的区别：admin 不需要 apiKey（也不应知道），
+    直接从原容器的 env 读出来。代价：要求原容器存在（attrs["Config"]["Env"]
+    在 stop/exit 后仍可读，无需容器在跑）。不存在 → 400，让 admin 引导用户
+    重新登录。
+    """
+    _, err = require_admin_session()
+    if err:
+        return err
+    if not client:
+        return jsonify({"error": "docker unavailable"}), 503
+    data = request.get_json(silent=True) or {}
+    uid         = (data.get("userId")      or "").strip()
+    reset_home  = bool(data.get("resetHome",    False))
+    reset_scratch = bool(data.get("resetScratch", False))
+    if not is_valid_user_id(uid):
+        return jsonify({"error": "invalid userId"}), 400
+    short = uid[:8]
+
+    # 1) 必须先有容器才能从 env 拿凭据
+    try:
+        old = client.containers.get(f"claude-{uid}")
+    except NotFound:
+        return jsonify({
+            "error": "用户容器不存在 —— 请先让用户从用户门户登录一次，再来重建。"
+        }), 400
+    except Exception as e:
+        return jsonify({"error": f"查询容器失败: {e}"}), 500
+
+    # 2) 从 env 读凭据
+    try:
+        base_url, api_key, opus, sonnet, haiku = _read_creds_from_container_env(old)
+    except RuntimeError as e:
+        app.logger.error(f"admin rebuild: read creds from env failed for {short}: {e}")
+        return jsonify({"error": str(e)}), 400
+
+    app.logger.info(
+        f"admin rebuild: user={short}... reset_home={reset_home} "
+        f"reset_scratch={reset_scratch} (creds from container env)"
+    )
+
+    # 3) 上限检查 —— 跟用户自己 rebuild 一样，排除自己的旧容器
+    if MAX_ACTIVE_CONTAINERS > 0:
+        active, _ = count_active_claude_containers()
+        own_running = 1 if find_user_container(uid) else 0
+        if (active - own_running) >= MAX_ACTIVE_CONTAINERS:
+            app.logger.warning(
+                f"admin rebuild rejected: active={active} (own={own_running}) "
+                f">= MAX_ACTIVE_CONTAINERS={MAX_ACTIVE_CONTAINERS}"
+            )
+            return jsonify({
+                "error": f"活跃容器已达上限 {MAX_ACTIVE_CONTAINERS}（当前 {active}）。"
+                         f"请清理后再试。",
+                "code": "MAX_ACTIVE_REACHED",
+                "active": active,
+                "limit":  MAX_ACTIVE_CONTAINERS,
+            }), 429
+
+    # 4) 重建容器（rebuild_container 内部已处理：stop+remove 旧 → ensure_user_dir(可选 wipe) → start）
+    try:
+        container, port, password = rebuild_container(
+            uid, base_url, api_key, opus, sonnet, haiku,
+            reset_home=reset_home, reset_scratch=reset_scratch,
+        )
+    except Exception as e:
+        app.logger.error(f"admin rebuild: rebuild_container failed for {short}: {e}")
+        return jsonify({"error": f"重建失败: {e}", "hint": "查看 ARCHITECTURE.md §10"}), 500
+
+    # 5) 更新 cache（保留 displayName meta，admin rebuild 不改显示名）
+    users = load_users_cache()
+    users[uid] = {
+        "container_id": container.id,
+        "port":         port,
+        "password":     password,
+        "last_seen":    time.time(),
+    }
+    save_users_cache(users)
+    # 注意：reset_home=True 会把 .portal_meta.json 一起删，displayName 丢失 —— 跟用户
+    # 自己 rebuild 行为一致（admin rebuild 不主动重新落地 displayName，因为 admin 不知道
+    # 也不应该改它）
+    app.logger.info(f"admin rebuild done: user={short}... port={port}")
+    return jsonify({
+        "port":         port,
+        "password":     password,
+        "user_id":      uid,
+        "display_name": _read_user_meta(uid).get("display_name", ""),
+    })
+
+
 @app.errorhandler(404)
 
 

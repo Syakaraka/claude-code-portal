@@ -178,9 +178,33 @@ function rowHtml(c) {
             <span><span class="tag ${tagCls}">${escapeHtml(c.status || "—")}</span></span>
             <span class="age">${escapeHtml(timeAgo(c.last_seen))}</span>
             <span class="actions">
+                <button class="btn btn-primary btn-sm" data-action="rebuild-toggle">重建 ▼</button>
                 ${status === "running" ? `<button class="btn btn-ghost btn-sm" data-action="stop">停止</button>` : ""}
                 <button class="btn btn-warn btn-sm" data-action="delete-toggle">删除 ▼</button>
             </span>
+            <div class="row-panel row-panel-rebuild">
+                <div class="opts-title opts-title-info">重建选项</div>
+                <div class="opts">
+                    <label>
+                        <input type="checkbox" data-opt="resetHome">
+                        <span>
+                            <div class="opt-title">同时清空用户目录</div>
+                            <div class="opt-desc">删除 volumes/users/&lt;uid&gt;/ 全部数据（设置、扩展、对话缓存、显示名称 meta、固定端口 .port）。</div>
+                        </span>
+                    </label>
+                    <label>
+                        <input type="checkbox" data-opt="resetScratch">
+                        <span>
+                            <div class="opt-title">同时清空临时目录</div>
+                            <div class="opt-desc">删除 volumes/users/&lt;uid&gt;/scratch 全部数据（仅临时区，保留 settings/扩展、.port）。</div>
+                        </span>
+                    </label>
+                </div>
+                <div class="opts-actions">
+                    <button class="btn btn-ghost btn-sm" data-action="cancel">取消</button>
+                    <button class="btn btn-primary btn-sm" data-action="rebuild-confirm">确认重建</button>
+                </div>
+            </div>
             <div class="row-panel">
                 <div class="opts-title">⚠ 删除选项</div>
                 <div class="opts">
@@ -233,13 +257,55 @@ async function handleAction(btn) {
         }
         return;
     }
+    if (action === "rebuild-toggle") {
+        // 重建面板和删除面板互斥 —— 展开一个先收起另一个
+        const wasExpanded = row.classList.contains("expanded-rebuild");
+        row.classList.remove("expanded");
+        row.classList.toggle("expanded-rebuild", !wasExpanded);
+        return;
+    }
     if (action === "delete-toggle") {
         // 展开 / 收起删除选项面板（同一行的二级确认）
-        row.classList.toggle("expanded");
+        const wasExpanded = row.classList.contains("expanded");
+        row.classList.remove("expanded-rebuild");
+        row.classList.toggle("expanded", !wasExpanded);
         return;
     }
     if (action === "cancel") {
         row.classList.remove("expanded");
+        row.classList.remove("expanded-rebuild");
+        return;
+    }
+    if (action === "rebuild-confirm") {
+        const resetHome    = !!row.querySelector('[data-opt="resetHome"]').checked;
+        const resetScratch = !!row.querySelector('[data-opt="resetScratch"]').checked;
+        const what = resetHome    ? "（同时清空用户目录）" :
+                     resetScratch ? "（同时清空临时目录）" : "";
+        if (!confirm(`重建 ${uid.slice(0,8)}…${what}？`)) return;
+        const confirmBtn = row.querySelector('[data-action="rebuild-confirm"]');
+        if (confirmBtn) confirmBtn.disabled = true;
+        setStatus(listStatus, `重建 ${uid.slice(0,8)}…`);
+        const resp = await authFetch("/api/admin/rebuild", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ userId: uid, resetHome, resetScratch }),
+        });
+        try {
+            const data = await resp.json();
+            if (!resp.ok || data.error) {
+                setStatus(listStatus, `重建失败：${data.error || resp.statusText}`, "error");
+            } else {
+                setStatus(
+                    listStatus,
+                    `✅ 已重建 ${uid.slice(0,8)}… 新端口=${data.port} 密码=${data.password} — 把新端口+密码告诉用户`,
+                    "success"
+                );
+                row.classList.remove("expanded-rebuild");
+            }
+        } finally {
+            if (confirmBtn) confirmBtn.disabled = false;
+            refresh();
+        }
         return;
     }
     if (action === "delete-confirm") {
