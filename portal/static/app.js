@@ -34,8 +34,9 @@ const rebuildToggle = document.getElementById("rebuild-toggle");
 const rebuildPanel  = document.getElementById("rebuild-panel");
 const rebuildConfirm= document.getElementById("rebuild-confirm");
 const rebuildCancel = document.getElementById("rebuild-cancel");
-const resetHomeEl   = document.getElementById("reset-home");
-const resetScratchEl= document.getElementById("reset-scratch");
+const resetHomeEl    = document.getElementById("reset-home");
+const syncTemplateEl = document.getElementById("sync-template");
+const resetScratchEl = document.getElementById("reset-scratch");
 const caBanner      = document.getElementById("ca-banner");
 const caCb          = document.getElementById("ca-installed");
 const footHost      = document.getElementById("foot-host");
@@ -167,6 +168,7 @@ async function handleSubmit(creds, isResubmit) {
     // 点 "回到上一步" 后改了内容再提交），可能不等 → 走 rebuild。
     const endpoint = (isResubmit && !sameAsSaved) ? "/api/rebuild" : "/api/start";
     const resetHome    = rebuildPanel.classList.contains("is-open") && resetHomeEl.checked;
+    const syncTemplate = rebuildPanel.classList.contains("is-open") && syncTemplateEl.checked;
     const resetScratch = rebuildPanel.classList.contains("is-open") && resetScratchEl.checked;
 
     setPill("working", "STARTING");
@@ -183,7 +185,7 @@ async function handleSubmit(creds, isResubmit) {
                 sonnetModel: creds.sonnetModel,
                 haikuModel:  creds.haikuModel,
                 displayName: creds.displayName || "",
-                resetHome, resetScratch,
+                resetHome, syncTemplate, resetScratch,
             }),
         });
         const data = await resp.json();
@@ -230,6 +232,7 @@ function showStep2({ port, password, user_id, display_name }) {
     rebuildPanel.classList.remove("is-open");
     if (renamePanel) renamePanel.hidden = true;
     resetHomeEl.checked = false;
+    syncTemplateEl.checked = false;
     resetScratchEl.checked = false;
     submitBtn.disabled = false;
     submitLabel.textContent = "保存修改";  // 在 step2 状态下，submit 不再可见 —— 这里只是防御
@@ -270,6 +273,39 @@ function showStep1(prefill) {
 }
 
 // ---- copy buttons ----
+// 跨环境复制（HTTP portal / HTTPS code-server 都行）：
+//   - secure context（HTTPS / localhost）→ navigator.clipboard.writeText
+//   - 非 secure context（HTTP IP）→ 隐藏 textarea + document.execCommand("copy")
+// 旧实现只用 navigator.clipboard，在 HTTP 上静默失败 → 用户看到 "已复制 ✓"
+// 但实际啥也没复制。execCommand 是 deprecated 但所有浏览器仍支持。
+async function copyToClipboard(text) {
+    // 1) 现代 API（secure context）
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+            return true;
+        }
+    } catch (e) { /* fall through */ }
+    // 2) Fallback：textarea + execCommand
+    try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        // 移出视口 + 不可聚焦：避免页面跳动 / 抢焦点
+        ta.style.position = "fixed";
+        ta.style.top = "0";
+        ta.style.left = "-9999px";
+        ta.setAttribute("readonly", "");
+        document.body.appendChild(ta);
+        ta.select();
+        ta.setSelectionRange(0, text.length);
+        const ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        return ok;
+    } catch (e) {
+        return false;
+    }
+}
+
 document.addEventListener("click", async (e) => {
     const btn = e.target.closest("[data-copy]");
     if (!btn) return;
@@ -277,20 +313,10 @@ document.addEventListener("click", async (e) => {
     const el = document.getElementById(targetId);
     if (!el) return;
     const val = el.textContent || el.value || "";
-    try {
-        const range = document.createRange();
-        range.selectNodeContents(el);
-        const sel = window.getSelection();
-        sel.removeAllRanges();
-        sel.addRange(range);
-        await navigator.clipboard.writeText(val);
-        sel.removeAllRanges();
-    } catch (e) {
-        // 静默失败 —— 用户仍可手动选择复制
-    }
+    const ok = await copyToClipboard(val);
     btn.classList.add("is-copied");
     const orig = btn.textContent;
-    btn.textContent = "已复制 ✓";
+    btn.textContent = ok ? "已复制 ✓" : "复制失败 — 手动选";
     setTimeout(() => {
         btn.classList.remove("is-copied");
         btn.textContent = orig;
@@ -309,8 +335,34 @@ rebuildToggle.addEventListener("click", () => {
 rebuildCancel.addEventListener("click", () => {
     rebuildPanel.classList.remove("is-open");
     resetHomeEl.checked = false;
+    syncTemplateEl.checked = false;
     resetScratchEl.checked = false;
 });
+
+// 重建选项三选一互斥（reset_home ⊃ sync_template ⊃ reset_scratch 的包含关系）：
+//   - 勾 reset_home → 取消 sync_template + reset_scratch（reset_home 是超集）
+//   - 勾 sync_template → 取消 reset_scratch（不影响 reset_home，但同时勾了 reset_home 也无意义）
+//   - 勾 reset_scratch → 不自动取消别的（reset_scratch 是独立的细粒度选项）
+// 这里实现成"勾一个就把另外两个清掉"，避免用户以为三个能同时生效。
+function _applyRebuildOptMutex(justChanged) {
+    if (justChanged === "reset-home" && resetHomeEl.checked) {
+        syncTemplateEl.checked = false;
+        resetScratchEl.checked = false;
+    } else if (justChanged === "sync-template" && syncTemplateEl.checked) {
+        resetHomeEl.checked = false;
+        // reset_scratch 跟 sync_template 语义不冲突（一个动 home，一个动 scratch），
+        // 但 UI 上三选一更清晰：勾 sync_template 也清掉 reset_scratch
+        resetScratchEl.checked = false;
+    } else if (justChanged === "reset-scratch" && resetScratchEl.checked) {
+        // reset_scratch 可以独立勾（保留 home，只清 scratch）
+        // 但跟 reset_home 重复 → 用户勾了 reset_home 就别让 reset_scratch 留
+        resetHomeEl.checked = false;
+        syncTemplateEl.checked = false;
+    }
+}
+resetHomeEl.addEventListener("change",    () => _applyRebuildOptMutex("reset-home"));
+syncTemplateEl.addEventListener("change", () => _applyRebuildOptMutex("sync-template"));
+resetScratchEl.addEventListener("change", () => _applyRebuildOptMutex("reset-scratch"));
 
 // ---- rename panel ----
 if (renameToggle) {
@@ -384,6 +436,7 @@ rebuildConfirm.addEventListener("click", async () => {
             body: JSON.stringify({
                 ...creds,
                 resetHome:    resetHomeEl.checked,
+                syncTemplate: syncTemplateEl.checked,
                 resetScratch: resetScratchEl.checked,
             }),
         });

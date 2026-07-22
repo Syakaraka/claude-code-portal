@@ -761,20 +761,28 @@ body {
             <div class="rebuild-panel" id="rebuild-panel">
                 <h4>⚠ 重建容器</h4>
                 <p>
-                    重建会停止当前容器并以同样的凭据重新启动。可选清空挂载目录的数据：
+                    重建会停止当前容器并以同样的凭据重新启动。可选处理挂载目录的数据
+                    （三个选项互斥，含义见下）：
                 </p>
                 <label class="opt">
                     <input type="checkbox" id="reset-home">
                     <span>
                         <div class="opt-title">重置用户目录</div>
-                        <div class="opt-desc">删除 volumes/users/&lt;uid&gt;/ 全部内容（Code Server 设置、扩展、对话缓存）</div>
+                        <div class="opt-desc">删除 volumes/users/&lt;uid&gt;/ 全部内容并从模板重建（Code Server 设置、扩展、对话缓存全部清空）。<b>隐含清空临时目录</b></div>
+                    </span>
+                </label>
+                <label class="opt">
+                    <input type="checkbox" id="sync-template">
+                    <span>
+                        <div class="opt-title">同步模板（增量）</div>
+                        <div class="opt-desc">把 volumes/node/ 的内容<b>增量同步</b>到用户目录：模板里有的覆盖、模板里没有的保留。<b>对话历史 / 扩展缓存 / 现有 settings 全部保留</b>。管理员改了模板文件想推给所有用户时用。</div>
                     </span>
                 </label>
                 <label class="opt">
                     <input type="checkbox" id="reset-scratch">
                     <span>
                         <div class="opt-title">重置临时目录</div>
-                        <div class="opt-desc">删除 volumes/users/&lt;uid&gt;/scratch 全部内容（本次会话的临时文件）</div>
+                        <div class="opt-desc">只删除 volumes/users/&lt;uid&gt;/scratch（本次会话的临时文件），home 保留。<b>包含在"重置用户目录"里</b>，不要同时勾</div>
                     </span>
                 </label>
                 <div class="opt-actions">

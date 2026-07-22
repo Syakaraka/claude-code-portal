@@ -206,14 +206,21 @@ function rowHtml(c) {
                         <input type="checkbox" data-opt="resetHome">
                         <span>
                             <div class="opt-title">同时清空用户目录</div>
-                            <div class="opt-desc">删除 volumes/users/&lt;uid&gt;/ 全部数据（设置、扩展、对话缓存、显示名称 meta、固定端口 .port）。</div>
+                            <div class="opt-desc">删除 volumes/users/&lt;uid&gt;/ 全部数据并从模板重建（设置、扩展、对话缓存、显示名称 meta、固定端口 .port 全部清空）。<b>隐含清空临时目录</b>。</div>
+                        </span>
+                    </label>
+                    <label>
+                        <input type="checkbox" data-opt="syncTemplate">
+                        <span>
+                            <div class="opt-title">同步模板（增量）</div>
+                            <div class="opt-desc">把 volumes/node/ 的内容<b>增量同步</b>到用户目录：模板里有的覆盖，模板里没有的保留（对话历史 / 扩展缓存 / settings 全部保留）。<b>管理员改了模板想推给用户时用</b>。</div>
                         </span>
                     </label>
                     <label>
                         <input type="checkbox" data-opt="resetScratch">
                         <span>
                             <div class="opt-title">同时清空临时目录</div>
-                            <div class="opt-desc">删除 volumes/users/&lt;uid&gt;/scratch 全部数据（仅临时区，保留 settings/扩展、.port）。</div>
+                            <div class="opt-desc">删除 volumes/users/&lt;uid&gt;/scratch 全部数据（仅临时区，保留 settings/扩展、.port）。<b>包含在"清空用户目录"里</b>，不要同时勾。</div>
                         </span>
                     </label>
                 </div>
@@ -295,8 +302,11 @@ async function handleAction(btn) {
     }
     if (action === "rebuild-confirm") {
         const resetHome    = !!row.querySelector('[data-opt="resetHome"]').checked;
+        const syncTemplate = !!row.querySelector('[data-opt="syncTemplate"]').checked;
         const resetScratch = !!row.querySelector('[data-opt="resetScratch"]').checked;
+        // 描述里体现选了哪个：reset_home 超集 / sync_template 增量 / reset_scratch 子集
         const what = resetHome    ? "（同时清空用户目录）" :
+                     syncTemplate ? "（增量同步模板）" :
                      resetScratch ? "（同时清空临时目录）" : "";
         if (!confirm(`重建 ${uid.slice(0,8)}…${what}？`)) return;
         const confirmBtn = row.querySelector('[data-action="rebuild-confirm"]');
@@ -305,7 +315,7 @@ async function handleAction(btn) {
         const resp = await authFetch("/api/admin/rebuild", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ userId: uid, resetHome, resetScratch }),
+            body: JSON.stringify({ userId: uid, resetHome, syncTemplate, resetScratch }),
         });
         try {
             const data = await resp.json();

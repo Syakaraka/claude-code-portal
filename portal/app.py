@@ -383,6 +383,64 @@ def _chown_recursive(path: str, uid: int, gid: int) -> None:
                 pass
 
 
+def sync_template_to_user(user_id: str) -> int:
+    """把 volumes/node/ 增量同步到 volumes/users/<uid>/（rsync 风格的覆盖语义）。
+
+    与 ensure_user_dir(wipe=True)（rmtree + copytree 全量覆盖）的关键区别：
+      - node/ 里有的文件 → 复制到 user_dir/ 同相对路径，**覆盖**同名文件
+      - node/ 里没有但 user_dir/ 里有的文件 → 不动（保留用户的扩展缓存、
+        对话历史、settings.json 等独有数据）
+      - 不删 user_dir/ 里任何东西
+
+    用例：管理员改了 volumes/node/ 里的某个文件（比如改了 .claude/hooks/ 下的
+    脚本或加了个新的 .vsix 推荐），想推到所有用户 → 用这个增量同步而不是 resetHome
+    （resetHome 会清掉所有用户的对话历史，不可接受）。
+
+    返回成功复制的文件数。USER_TEMPLATE 缺失或 user_dir 不存在 → 0 + WARNING。
+    """
+    user_dir = os.path.join(USER_DATA_BASE, user_id)
+    if not os.path.isdir(USER_TEMPLATE):
+        app.logger.warning(f"sync_template_to_user: USER_TEMPLATE missing ({USER_TEMPLATE})")
+        return 0
+    if not os.path.isdir(user_dir):
+        app.logger.warning(f"sync_template_to_user: user dir missing ({user_dir})")
+        return 0
+
+    copied = 0
+    failed = 0
+    for root, dirs, files in os.walk(USER_TEMPLATE):
+        rel = os.path.relpath(root, USER_TEMPLATE)
+        target_dir = user_dir if rel == "." else os.path.join(user_dir, rel)
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+        except Exception as e:
+            app.logger.warning(f"sync_template_to_user: makedirs {target_dir} failed: {e}")
+            continue
+        for fname in files:
+            src = os.path.join(root, fname)
+            dst = os.path.join(target_dir, fname)
+            try:
+                # copy2 保留 mtime / mode / atime —— 模板里文件如果设了特殊权限位（如
+                # scripts 的 +x）会被保留。symlink 会被解析成普通文件（OK，模板里
+                # 不应该放 symlink）
+                shutil.copy2(src, dst)
+                copied += 1
+            except Exception as e:
+                failed += 1
+                app.logger.warning(f"sync_template_to_user: copy {src} -> {dst} failed: {e}")
+
+    # 跟 ensure_user_dir 一样做权限收尾 —— 模板里 chmod 过的文件被 copy2 保留，
+    # 但新覆盖的目录（makedirs 创建的）权限是默认值，需要 _chmod_user_dir 刷一遍；
+    # chown 1000:1000 也是为了让容器内 node 用户对新复制/创建的目录有写权限。
+    _chmod_user_dir(user_dir)
+    _chown_recursive(user_dir, uid=1000, gid=1000)
+
+    app.logger.info(
+        f"sync_template_to_user: {user_id[:8]}... copied={copied} failed={failed}"
+    )
+    return copied
+
+
 def host_user_dir_for(user_id: str) -> str:
     """user_id → host 视角绝对路径（给 docker.run() 当 bind source）。"""
     return os.path.join(HOST_USER_DATA_BASE, user_id)
@@ -663,15 +721,29 @@ def get_container_port(container) -> int | None:
 
 def rebuild_container(user_id: str, base_url: str, api_key: str,
                       opus_model: str, sonnet_model: str, haiku_model: str,
-                      reset_home: bool = False, reset_scratch: bool = False):
-    """停止并删除旧容器（如果存在），按选项重置 home/scratch 后启动新容器。
+                      reset_home: bool = False, reset_scratch: bool = False,
+                      sync_template: bool = False):
+    """停止并删除旧容器（如果存在），按选项重置 home/scratch/同步模板后启动新容器。
     返回 (container, port, password)。
+
+    选项互斥语义（包含关系）：
+      - reset_home 隐含 reset_scratch（rmtree 整个 home 包括 scratch 子目录）
+      - reset_home 隐含 sync_template（copytree 是 sync 的超集：删+全拷）
+      - sync_template 和 reset_scratch 互不相关（一个动 home，一个动 scratch 子树）
+
+    实际生效：
+      - reset_home=True → wipe home + 从模板 copytree（reset_scratch / sync_template 自动 no-op）
+      - reset_home=False, sync_template=True → 增量同步 node/ → user_dir/
+      - reset_home=False, sync_template=False, reset_scratch=True → 只删 scratch
+      - 全 False → home 原样保留
 
     步骤：
       1) 找到旧容器（如有）→ 删掉
       2) 如果 reset_home → ensure_user_dir(user_id, wipe=True)（删整个 home 再从模板重建）
-      3) start_container(..., wipe_scratch=reset_scratch)（在内部删 scratch 再建）
-    注意顺序：先删容器，再删目录 —— 反过来容器还在跑就会写到被删的目录。
+      3) 否则如果 sync_template → sync_template_to_user(user_id)（增量覆盖）
+      4) start_container(..., wipe_scratch=reset_scratch)（在内部删 scratch 再建）
+
+    注意顺序：先删容器，再删/同步目录 —— 反过来容器还在跑就会写到被删的目录。
     """
     if not client:
         raise RuntimeError("docker unavailable")
@@ -688,10 +760,13 @@ def rebuild_container(user_id: str, base_url: str, api_key: str,
         pass
     except Exception as e:
         app.logger.warning(f"rebuild: removing old container failed (continuing): {e}")
-    # 2) 重置 home（如果勾选）—— 必须在删容器之后
+    # 2) reset_home 超集：如果勾了 reset_home，sync_template 自动 no-op（copytree 已包含）
     if reset_home:
         ensure_user_dir(user_id, wipe=True)
-    # 3) start_container 内部会处理 scratch 重置
+    elif sync_template:
+        # 3) 增量同步模板（仅当没勾 reset_home 时生效）
+        sync_template_to_user(user_id)
+    # 4) start_container 内部会处理 scratch 重置
     return start_container(
         user_id, base_url, api_key, opus_model, sonnet_model, haiku_model,
         wipe_scratch=reset_scratch,
@@ -1114,8 +1189,9 @@ def api_rebuild():
     sonnet_model = (data.get("sonnetModel") or "").strip()
     haiku_model  = (data.get("haikuModel")  or "").strip()
     display_name = _sanitize_display_name(data.get("displayName"))
-    reset_home   = bool(data.get("resetHome",   False))
+    reset_home    = bool(data.get("resetHome",    False))
     reset_scratch = bool(data.get("resetScratch", False))
+    sync_template = bool(data.get("syncTemplate", False))
     if not (base_url and api_key and opus_model and sonnet_model and haiku_model):
         return jsonify({"error": "缺少必要字段"}), 400
     if not display_name:
@@ -1123,7 +1199,10 @@ def api_rebuild():
 
     user_id = hash_api_key(api_key)
     short = user_id[:8]
-    app.logger.info(f"rebuild: user={short}... reset_home={reset_home} reset_scratch={reset_scratch} displayName={display_name!r}")
+    app.logger.info(
+        f"rebuild: user={short}... reset_home={reset_home} reset_scratch={reset_scratch} "
+        f"sync_template={sync_template} displayName={display_name!r}"
+    )
     # 上限检查：rebuild 总是先 stop+remove 旧容器再起新的，活跃数变化跟 start 一样
     # 都要先验。但要排除自己的旧容器（rebuild 时它还没被删），否则永远自增 → 永远超限
     if MAX_ACTIVE_CONTAINERS > 0:
@@ -1144,6 +1223,7 @@ def api_rebuild():
         container, port, password = rebuild_container(
             user_id, base_url, api_key, opus_model, sonnet_model, haiku_model,
             reset_home=reset_home, reset_scratch=reset_scratch,
+            sync_template=sync_template,
         )
     except Exception as e:
         app.logger.error(f"rebuild failed for {short}: {e}")
@@ -1409,9 +1489,10 @@ def api_admin_rebuild():
     if not client:
         return jsonify({"error": "docker unavailable"}), 503
     data = request.get_json(silent=True) or {}
-    uid         = (data.get("userId")      or "").strip()
-    reset_home  = bool(data.get("resetHome",    False))
+    uid           = (data.get("userId")      or "").strip()
+    reset_home    = bool(data.get("resetHome",    False))
     reset_scratch = bool(data.get("resetScratch", False))
+    sync_template = bool(data.get("syncTemplate", False))
     if not is_valid_user_id(uid):
         return jsonify({"error": "invalid userId"}), 400
     short = uid[:8]
@@ -1435,7 +1516,8 @@ def api_admin_rebuild():
 
     app.logger.info(
         f"admin rebuild: user={short}... reset_home={reset_home} "
-        f"reset_scratch={reset_scratch} (creds from container env)"
+        f"reset_scratch={reset_scratch} sync_template={sync_template} "
+        f"(creds from container env)"
     )
 
     # 3) 上限检查 —— 跟用户自己 rebuild 一样，排除自己的旧容器
@@ -1455,11 +1537,12 @@ def api_admin_rebuild():
                 "limit":  MAX_ACTIVE_CONTAINERS,
             }), 429
 
-    # 4) 重建容器（rebuild_container 内部已处理：stop+remove 旧 → ensure_user_dir(可选 wipe) → start）
+    # 4) 重建容器（rebuild_container 内部已处理：stop+remove 旧 → ensure_user_dir(可选 wipe) / sync_template_to_user(可选) → start）
     try:
         container, port, password = rebuild_container(
             uid, base_url, api_key, opus, sonnet, haiku,
             reset_home=reset_home, reset_scratch=reset_scratch,
+            sync_template=sync_template,
         )
     except Exception as e:
         app.logger.error(f"admin rebuild: rebuild_container failed for {short}: {e}")
