@@ -131,6 +131,14 @@ function renderRows(items, meta) {
     const limit  = meta?.limit  ?? 0;
     const limitStr = limit > 0 ? `${active} / ${limit}` : `${active}`;
     listMeta.textContent = `活跃 ${limitStr} · 共 ${items.length}`;
+    // 记住重渲前哪些行有展开面板（setInterval 5s 自动 refresh 会重写整个 HTML，
+    // 不保留的话 admin 正在勾选项就被折叠了，UX 没法用）
+    const expanded = {
+        delete:   new Set(),
+        rebuild:  new Set(),
+    };
+    rowsEl.querySelectorAll(".trow.expanded").forEach(r => expanded.delete.add(r.dataset.uid));
+    rowsEl.querySelectorAll(".trow.expanded-rebuild").forEach(r => expanded.rebuild.add(r.dataset.uid));
     if (!items.length) {
         rowsEl.innerHTML = `
             <div class="empty">
@@ -140,6 +148,15 @@ function renderRows(items, meta) {
         return;
     }
     rowsEl.innerHTML = items.map(c => rowHtml(c)).join("");
+    // 恢复展开状态
+    for (const uid of expanded.delete) {
+        const row = rowsEl.querySelector(`.trow[data-uid="${CSS.escape(uid)}"]`);
+        if (row) row.classList.add("expanded");
+    }
+    for (const uid of expanded.rebuild) {
+        const row = rowsEl.querySelector(`.trow[data-uid="${CSS.escape(uid)}"]`);
+        if (row) row.classList.add("expanded-rebuild");
+    }
 
     rowsEl.querySelectorAll("[data-action]").forEach(btn => {
         btn.addEventListener("click", () => handleAction(btn));
