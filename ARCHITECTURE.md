@@ -212,7 +212,7 @@ claude_web_images/
 ├── ARCHITECTURE.md             # ← 本文档
 ├── vendor/                     # ⚠️ 不入库，构建环境预下载的二进制
 │   ├── code-server_4.129.0_amd64.deb
-│   ├── Anthropic.claude-code-2.1.216@linux-x64.vsix
+│   ├── Anthropic.claude-code-2.1.217@linux-x64.vsix
 │   └── MS-CEINTL.vscode-language-pack-zh-hans.vsix
 ├── volumes/                    # ⚠️ 不入库（含用户数据 + 知识库）
 │   ├── code/                   # 团队知识库（→ 容器 /workspace, RO）
@@ -452,7 +452,7 @@ portal 内部把 `opusModel` 复制到 `ANTHROPIC_MODEL`（兼容老版 Claude C
 - [x] 浏览器记住 code-server password（`PASSWORD_MAP`）
 - [x] 容器启动失败时把日志带回来便于排查
 - [x] **Claude Code 镜像优化**（见 §11）：
-  - [x] 预装 Claude Code VS Code 扩展（2.1.216 linux-x64）
+  - [x] 预装 Claude Code VS Code 扩展（2.1.217 linux-x64）
   - [x] 预装简体中文语言包（1.128.x，兼容 code-server 自带 VS Code 1.129.0）
   - [x] UI 默认中文（`locale: zh-cn`，含 argv.json + userDataDir/languagepacks.json 兜底）
   - [x] code-server 默认打开 multi-root `/home/node/workspace.code-workspace`（/workspace + scratch）
@@ -510,7 +510,7 @@ portal 内部把 `opusModel` 复制到 `ANTHROPIC_MODEL`（兼容老版 Claude C
 | 文件 | 来源 | 必需 |
 |------|------|------|
 | `code-server_4.129.0_amd64.deb` | github releases (`ghproxy.net` 镜像拉) | ✅ |
-| `Anthropic.claude-code-2.1.216@linux-x64.vsix` | MS Marketplace（**必须 linux-x64**）| ✅ |
+| `Anthropic.claude-code-2.1.217@linux-x64.vsix` | MS Marketplace（**必须 linux-x64**）| ✅ |
 | `MS-CEINTL.vscode-language-pack-zh-hans.vsix` | MS Marketplace | ✅（要求 `engines.vscode: ^1.128.0`，因 code-server 4.129.0 自带 VS Code 1.129.0）|
 
 ### 11.3 vendor 文件下载指引
@@ -588,7 +588,7 @@ docker run --rm -u 0 --entrypoint /usr/local/bin/entrypoint.sh claude-code:local
 ```
 [entrypoint] installing local VS Code extensions:
   - MS-CEINTL.vscode-language-pack-zh-hans.vsix
-  - Anthropic.claude-code-2.1.216@linux-x64.vsix
+  - Anthropic.claude-code-2.1.217@linux-x64.vsix
 [entrypoint] chmod +x: claude
 [entrypoint] chmod +x: audio-capture.node
 [entrypoint] wrote User/settings.json (workspace trust disabled, publishers pre-trusted)
@@ -1156,5 +1156,6 @@ CLAUDE_WORKSPACE_FILE_NAME      ${WORKSPACE_FILE_NAME}
 | 2026-07-19 | **displayName 辅助标识（§18）**：用户可填一个名字（"张伟（产品组）"），纯辅助不参与 hash/隔离/路径；存 `volumes/users/<uid>/.portal_meta.json`；新接口 `/api/profile` PATCH（不动容器）；`/api/start` / `/api/rebuild` 接受 displayName 参数；admin 表格新增 NAME 列。后端 sanitize（白名单字符 + 40 字截断 + 去 control char），HTML escape 渲染防 XSS |
 | 2026-07-20 | **每用户端口固定（§19）**：首次分配后写到 `volumes/users/<uid>/.port`，rebuild / 重启 portal / 重建镜像都复用同端口；新函数 `alloc_port_for_user` 取代 `next_free_port()`，覆盖 5 条降级路径（破坏/范围外/占用/范围外/不存在）每条都 WARNING 日志；admin PORT 列加 ✓/⚠/无标记 反映 pinned vs 实际；wipeHome 连带删 .port（语义：完全重置）。实测 8 项矩阵全绿 |
 | 2026-07-21 | **`languagepacks.json` 必填字段补齐 → Claude Code 扩展激活修复**：上一条 2026-07-20 修复后用户报"claude code 扩展加载不出来"——F12 console 看 `getInstalledLanguages` 抛 `TypeError: Cannot read properties of undefined (reading '0')`，阻塞 `scanExtensions → _resolveExtensionsDefault` 流程（server-main.js:680345）。根因是 entrypoint 写的 `languagepacks.json` 缺两个必填字段：`extensions[]`（getInstalledLanguages 取 `i.extensions[0].extensionIdentifier.id`）和 `label`（createQuickPickItem 用）—— 没有 `extensions` 字段不只是"语言包加载失败"，会让 code-server 4.129.0 **整条扩展解析中断**，anthropic.claude-code 等所有第三方扩展被过滤掉（不止语言包）。修复：从 ms-ceintl 扩展的 `package.json` 动态读 `version` + `localizedLanguageName`/`languageName` + `publisher`/`name` 拼出完整格式 `{hash, extensions:[{extensionIdentifier:{id:"..."}, version:"..."}], label, translations}`。新镜像 hash `259db81f`，浏览器实测 Claude Code 扩展图标出现、点击能正常激活。**经验**：vscode 扩展 service 写出的 cache file 格式比 generateNls 的最小需求更严格，自己手写必须按完整 schema 来。 |
+| 2026-07-22 | **镜像装齐 anthropics/skills（docx/pptx/xlsx/pdf）依赖 + 常用系统工具 + Claude Code 2.1.217**：补 apt 包 `unzip/zip/xz-utils/bzip2/p7zip-full/jq/poppler-utils/qpdf/tesseract-ocr+tesseract-ocr-chi-sim+eng/pandoc/imagemagick/libreoffice/python3+python3-pip/coreutils/fonts-noto-cjk+fonts-liberation+fonts-dejavu`；补 pip 包 `pypdf/pdfplumber/pdf2image/pytesseract/reportlab/pypdfium2/Pillow/markitdown[pptx]/python-pptx/defusedxml/lxml/openpyxl/pandas`；补 npm 包 `docx/pptxgenjs/react/react-dom/react-icons/sharp`。vendor 替换 `Anthropic.claude-code-2.1.216@linux-x64.vsix` → `Anthropic.claude-code-2.1.217@linux-x64.vsix`，DEPLOY.md/ARCHITECTURE.md 同步版本号。镜像预计从 ~782MB → ~1.4GB（libreoffice ~280MB + pandoc ~80MB + tesseract ~50MB 是大头） |
 | 2026-07-21 | **vendor 升级到 anthropic.claude-code@2.1.216**：跟市场推送同步；跟 2.1.215 相比改了 6 个文件（`extension.js` + `claude-code-settings.schema.json` + `package.json` 内容文本重排 + `resources/native-binary/claude` 二进制 + `webview/index.{js,css}`），功能上是普通 bug fix + UI 调整 + schema 更新，**未引入 `dist/browser/extension.js` web bundle**（web mode 激活限制保持不变）；同时清理 vendor：删掉旧 `anthropic.claude-code.vsix`(2.1.214) + `*.vsix.bak` 备份——避免 COPY 时多版同 ID 冲突。镜像 hash `ad0cc62a`（其他层全 cache 命中，仅 COPY .vsix 层重做） |
 | 2026-07-20 | **精简 claude-code 镜像**：移除 `unified_db_mcp.ts`（MySQL+Oracle 只读 SQL MCP）+ `mysql2`/`oracledb`/`@modelcontextprotocol/sdk`/`zod`/`mcp-remote`/`tsx` npm 包 + Dockerfile 里的 `libaio1` apt 依赖 + portal/app.py 里的 Oracle Instant Client bind / `LD_LIBRARY_PATH` env；对应 .env.example / .env / docker-compose.yml / DEPLOY.md / 附录 B 全部同步清理。镜像从 793MB → 782MB（压缩）；运行时不再 bind `/opt/oracle/instantclient` ~200MB 内存/容器也省下。保留 claude-code npm vsix @ 2.1.215 + code-server 4.129.0 + Node 22.23.1 LTS（Jod）—— 都是当前最新。`git log` 这次大改：源码/配置/文档全部统一推进；存量用户 home 目录里的旧 mcp 残留不影响新容器启动（每容器重建后都用新 entrypoint）|
