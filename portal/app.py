@@ -26,6 +26,12 @@ app.permanent_session_lifetime = timedelta(
     seconds=int(os.environ.get("ADMIN_SESSION_MAX_AGE", 8 * 3600))
 )
 
+# 显式声明 SameSite=Lax（Flask 默认 None → 不输出 SameSite 属性）。
+# Chrome 80+ 对"没写 SameSite 的 cookie"按 Lax 处理，但**对纯 IP 地址**
+# （192.168.1.2 这种）算法古怪，部分版本会直接拒绝发送 → "Application 里有
+# cookie 但请求不带"症状。显式设了以后行为可预期：same-site 请求一律放行。
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
 # ---------- 日志中过滤敏感信息（API Key） ----------
 
 class SecretFilter(logging.Filter):
