@@ -212,7 +212,7 @@ claude_web_images/
 ├── ARCHITECTURE.md             # ← 本文档
 ├── vendor/                     # ⚠️ 不入库，构建环境预下载的二进制
 │   ├── code-server_4.129.0_amd64.deb
-│   ├── Anthropic.claude-code-2.1.216@linux-x64.vsix
+│   ├── Anthropic.claude-code-2.1.217@linux-x64.vsix
 │   └── MS-CEINTL.vscode-language-pack-zh-hans.vsix
 ├── volumes/                    # ⚠️ 不入库（含用户数据 + 知识库）
 │   ├── code/                   # 团队知识库（→ 容器 /workspace, RO）
@@ -452,7 +452,7 @@ portal 内部把 `opusModel` 复制到 `ANTHROPIC_MODEL`（兼容老版 Claude C
 - [x] 浏览器记住 code-server password（`PASSWORD_MAP`）
 - [x] 容器启动失败时把日志带回来便于排查
 - [x] **Claude Code 镜像优化**（见 §11）：
-  - [x] 预装 Claude Code VS Code 扩展（2.1.216 linux-x64）
+  - [x] 预装 Claude Code VS Code 扩展（2.1.217 linux-x64）
   - [x] 预装简体中文语言包（1.128.x，兼容 code-server 自带 VS Code 1.129.0）
   - [x] UI 默认中文（`locale: zh-cn`，含 argv.json + userDataDir/languagepacks.json 兜底）
   - [x] code-server 默认打开 multi-root `/home/node/workspace.code-workspace`（/workspace + scratch）
@@ -510,7 +510,7 @@ portal 内部把 `opusModel` 复制到 `ANTHROPIC_MODEL`（兼容老版 Claude C
 | 文件 | 来源 | 必需 |
 |------|------|------|
 | `code-server_4.129.0_amd64.deb` | github releases (`ghproxy.net` 镜像拉) | ✅ |
-| `Anthropic.claude-code-2.1.216@linux-x64.vsix` | MS Marketplace（**必须 linux-x64**）| ✅ |
+| `Anthropic.claude-code-2.1.217@linux-x64.vsix` | MS Marketplace（**必须 linux-x64**）| ✅ |
 | `MS-CEINTL.vscode-language-pack-zh-hans.vsix` | MS Marketplace | ✅（要求 `engines.vscode: ^1.128.0`，因 code-server 4.129.0 自带 VS Code 1.129.0）|
 
 ### 11.3 vendor 文件下载指引
@@ -588,7 +588,7 @@ docker run --rm -u 0 --entrypoint /usr/local/bin/entrypoint.sh claude-code:local
 ```
 [entrypoint] installing local VS Code extensions:
   - MS-CEINTL.vscode-language-pack-zh-hans.vsix
-  - Anthropic.claude-code-2.1.216@linux-x64.vsix
+  - Anthropic.claude-code-2.1.217@linux-x64.vsix
 [entrypoint] chmod +x: claude
 [entrypoint] chmod +x: audio-capture.node
 [entrypoint] wrote User/settings.json (workspace trust disabled, publishers pre-trusted)
@@ -887,23 +887,33 @@ os.chmod(scratch_dir, 0o777)
 
 ### 服务端流程
 ```
-POST /api/rebuild { baseUrl, apiKey, opusModel, sonnetModel, haikuModel, resetHome, resetScratch }
+POST /api/rebuild { baseUrl, apiKey, opusModel, sonnetModel, haikuModel, resetHome?, syncTemplate?, resetScratch? }
   → 1) 旧容器 stop(timeout=10) + remove(force=True)
-  → 2) 若 resetHome → ensure_user_dir(user_id, wipe=True) [删整个 home，从模板重建]
+  → 2) reset_home=True  → ensure_user_dir(user_id, wipe=True) [rmtree 整个 home → copytree 模板]
+     否则若 sync_template=True → sync_template_to_user(user_id) [增量覆盖：模板有→覆盖，模板无→不动]
   → 3) start_container(..., wipe_scratch=resetScratch) [内部删 scratch]
   → 返回 { port, password, user_id }
 ```
 
-**顺序关键**：先 stop+remove 容器，再删目录。反过来容器还在跑就会写到被删的目录。
+**顺序关键**：先 stop+remove 容器，再删/同步目录。反过来容器还在跑就会写到被删的目录。
 
 ### reset 选项语义
-| 选项 | 删除什么 | 影响 |
-|------|---------|------|
-| 不勾 | 旧容器停掉，目录保留 | 用户 home settings / extensions / scratch 临时文件全部保留 |
-| `resetScratch` | 仅删 `users/<uid>/scratch/` | 清临时区，保留 home |
-| `resetHome` | 删 `users/<uid>/` 整个目录 | 从 `volumes/node/` 模板重建 home —— Code Server settings、扩展缓存、对话历史全清 |
+| 选项 | 删什么 | 改什么 | 影响 |
+|------|--------|--------|------|
+| 不勾 | — | — | 用户 home settings / extensions / scratch / 对话历史全部保留 |
+| `resetScratch` | `users/<uid>/scratch/` | — | 清临时区，保留 home（含 settings / 扩展 / 对话历史） |
+| `syncTemplate` | — | `volumes/node/` 的文件**增量**覆盖到 `users/<uid>/` 同相对路径 | 模板里有的被覆盖（更新/新增），模板里没有的保留（用户的扩展缓存、对话历史、settings 全部不动） |
+| `resetHome` | 整个 `users/<uid>/` | 从 `volumes/node/` 全量重建 | Code Server settings、扩展缓存、对话历史、displayName meta、固定端口 .port 全部清空 |
 
-注意 `resetHome` 隐含 `resetScratch`（scratch 是 home 的子目录）。
+**包含关系（互斥语义）**：
+- `resetHome` 隐含 `resetScratch`（scratch 是 home 子目录，rmtree 会一起删）
+- `resetHome` 隐含 `syncTemplate`（copytree 是 sync 的超集——删完整个再拷全部，效果就是 sync 全部覆盖）
+- `syncTemplate` 和 `resetScratch` 语义正交（一个动 home，一个动 scratch 子树），但前端三选一互斥避免误操作
+
+**典型用例**：
+- 管理员改了 `volumes/node/.claude/hooks/foo.sh` 想推给所有用户 → 用户/管理员点"同步模板"，对话历史和扩展缓存都保留
+- 用户的 Claude Code 状态错乱 → 点"重置用户目录"，从模板全新来
+- 用户报"scratch 里临时文件太多" → 点"重置临时目录"，只清 scratch，settings 和对话历史保留
 
 ---
 
@@ -938,18 +948,28 @@ portal 编排的所有容器都得能在服务器端被管理（容器卡死 / �
 | `/api/admin/containers` | GET | 列出所有 portal 编排的容器（按 last_seen 倒序） |
 | `/api/admin/stop` | POST | 停止单个容器 `{ userId }` |
 | `/api/admin/delete` | POST | 删容器 `{ userId, wipeHome?, wipeScratch? }` |
+| `/api/admin/rebuild` | POST | 重建容器 `{ userId, resetHome?, syncTemplate?, resetScratch? }` —— 从原容器 env 读 apiKey/baseUrl/models，无需用户提供 |
 
-### "重建"为什么 admin 端不直接做
-管理员没有用户的 API key（也不会把用户的 key 明文存进 cache），无法调 `start_container`。
-- Admin 路径只能 **stop / delete**（删完用户自己重新登录拉起新容器）
-- 真正的"重建"必须走用户门户（那里有明文 apiKey，能调 `/api/rebuild`）
+### "重建"为什么 admin 端现在也能做（§20）
 
-这是有意为之：避免在 admin cache / 日志里存任何明文 key。
+以前：admin 路径只能 stop/delete，因为没有 apiKey 也故意不持久化。
+现在：admin rebuild 不需要 apiKey —— `start_container()` 启动时把 apiKey/baseUrl/models
+写进容器 env（`Config.Env`），admin 通过 `docker inspect`（实际只读已在内存的
+`container.attrs`，不发网络请求）即可提取，复用给 `rebuild_container()`。
+
+约束：
+- **原容器必须存在**（哪怕已 exited）—— env 在 `attrs["Config"]["Env"]`，跟容器状态无关
+- 找不到原容器 → 400 让 admin 引导用户重新登录一次（用户登录时 portal 把 apiKey
+  写进 env，下次 admin 就能 rebuild）
+- **cache 仍不存 apiKey** —— admin rebuild 用完即弃，container 删了 env 也跟着没了
 
 ### UI
 - 与用户门户同款 workshop-ticket 美学（ticker strip / mono 标签 / hairline 表格）
 - 登录态 5 秒自动刷新一次
-- 单行展开可勾选 wipeHome / wipeScratch，再点"删除"会带选项执行
+- 单行三个动作：**重建** / 停止 / 删除 ▼
+- 重建面板：勾选 resetHome / resetScratch 跟用户门户完全等价（reset_home=True 会
+  把 .portal_meta.json 一起删，displayName 丢失，跟用户自己 rebuild 行为一致）
+- 重建 / 删除 面板互斥展开（展开一个先收起另一个），防止误操作
 
 ---
 
@@ -1099,6 +1119,22 @@ CSS：`.port .pin-tag { display: inline-block; margin-left: 4px; font-weight: 70
 
 ---
 
+## 20. 管理员重建容器（`/api/admin/rebuild`）
+
+详见 §17 路由清单 + 下面 changelog 2026-07-22 条目。核心要点：
+
+- **实现路径**：`rebuild_container()` 本来就吃 apiKey/baseUrl/models，admin 只需从
+  原容器 env 读出来（不修改 `rebuild_container` 本身）。读取走 `container.attrs["Config"]["Env"]`，
+  docker inspect 在容器创建时就已记录，**不发网络请求**，镜像被 rmi 也不影响。
+- **不破坏"不持久化 apiKey"原则**：apiKey 从来不写进 cache；admin rebuild 用的是 env，
+  env 跟着容器走，container 删了 env 也消失。
+- **唯一短板**：原容器不存在（用户从未登录过，或已被外部 rm） → admin 没法重建。
+  返回 400 让 admin 引导用户重新登录一次（登录会把 apiKey 写进新容器的 env，下次能 rebuild）。
+- **resetHome / resetScratch 语义跟用户自己 rebuild 完全一致**：resetHome=True 会把
+  `.portal_meta.json` 一起删（displayName 丢失），`.port` 跟着被删后下次登录重摇。
+
+---
+
 ## 附录 A：环境变量速查
 
 **Portal 容器**（从 `.env` 注入，详见 §15）：
@@ -1156,5 +1192,10 @@ CLAUDE_WORKSPACE_FILE_NAME      ${WORKSPACE_FILE_NAME}
 | 2026-07-19 | **displayName 辅助标识（§18）**：用户可填一个名字（"张伟（产品组）"），纯辅助不参与 hash/隔离/路径；存 `volumes/users/<uid>/.portal_meta.json`；新接口 `/api/profile` PATCH（不动容器）；`/api/start` / `/api/rebuild` 接受 displayName 参数；admin 表格新增 NAME 列。后端 sanitize（白名单字符 + 40 字截断 + 去 control char），HTML escape 渲染防 XSS |
 | 2026-07-20 | **每用户端口固定（§19）**：首次分配后写到 `volumes/users/<uid>/.port`，rebuild / 重启 portal / 重建镜像都复用同端口；新函数 `alloc_port_for_user` 取代 `next_free_port()`，覆盖 5 条降级路径（破坏/范围外/占用/范围外/不存在）每条都 WARNING 日志；admin PORT 列加 ✓/⚠/无标记 反映 pinned vs 实际；wipeHome 连带删 .port（语义：完全重置）。实测 8 项矩阵全绿 |
 | 2026-07-21 | **`languagepacks.json` 必填字段补齐 → Claude Code 扩展激活修复**：上一条 2026-07-20 修复后用户报"claude code 扩展加载不出来"——F12 console 看 `getInstalledLanguages` 抛 `TypeError: Cannot read properties of undefined (reading '0')`，阻塞 `scanExtensions → _resolveExtensionsDefault` 流程（server-main.js:680345）。根因是 entrypoint 写的 `languagepacks.json` 缺两个必填字段：`extensions[]`（getInstalledLanguages 取 `i.extensions[0].extensionIdentifier.id`）和 `label`（createQuickPickItem 用）—— 没有 `extensions` 字段不只是"语言包加载失败"，会让 code-server 4.129.0 **整条扩展解析中断**，anthropic.claude-code 等所有第三方扩展被过滤掉（不止语言包）。修复：从 ms-ceintl 扩展的 `package.json` 动态读 `version` + `localizedLanguageName`/`languageName` + `publisher`/`name` 拼出完整格式 `{hash, extensions:[{extensionIdentifier:{id:"..."}, version:"..."}], label, translations}`。新镜像 hash `259db81f`，浏览器实测 Claude Code 扩展图标出现、点击能正常激活。**经验**：vscode 扩展 service 写出的 cache file 格式比 generateNls 的最小需求更严格，自己手写必须按完整 schema 来。 |
+| 2026-07-22 | **管理员支持给用户重建容器（§17/§20）**：新增 `POST /api/admin/rebuild { userId, resetHome?, resetScratch? }`。admin 不需要 apiKey —— `start_container()` 启动时把 apiKey/baseUrl/models 写进容器 env（`Config.Env`），admin 通过 `container.attrs["Config"]["Env"]`（已缓存，不发网络请求）即可提取，复用给 `rebuild_container()`。**严格遵守"不持久化 apiKey"原则**：apiKey 从来不写进 cache，admin rebuild 用的是 env，env 跟着容器走，container 删了 env 也消失。约束：原容器不存在（用户从未登录 / 已被外部 rm）→ 400 让 admin 引导用户重新登录一次（登录后 env 就有 apiKey 了，下次能 rebuild）。resetHome/resetScratch 语义跟用户自己 rebuild 完全一致（resetHome=True 会把 `.portal_meta.json` 一起删 → displayName 丢失）。admin.js 每行 actions 加"重建 ▼"按钮（蓝色 btn-primary，跟删除按钮区分），展开 panel 跟删除 panel 互斥（toggle 时互关），提交后 listStatus 显示新端口+密码，admin 转交用户。 |
+| 2026-07-22 | **rebuild 加 `syncTemplate` 选项（增量同步模板，§16）**：在原有 `resetHome` / `resetScratch` 之外新增第三个选项。语义：把 `volumes/node/` 的文件**增量同步**到 `volumes/users/<uid>/`（模板有的覆盖同名文件，模板没有的**不动**）—— 典型场景是管理员改了模板里某个 `.claude/hooks/foo.sh` 想推给所有用户，用 `syncTemplate` 而不是 `resetHome`（resetHome 会清空对话历史、扩展缓存、settings，不可接受）。后端新函数 `sync_template_to_user()`（`os.walk(USER_TEMPLATE)` + `shutil.copy2` + `os.makedirs(exist_ok=True)`，不删任何东西；完成后 `_chmod_user_dir` + `_chown_recursive` 跟 `ensure_user_dir` 同样收尾）；`rebuild_container()` 加 `sync_template` 参数，`reset_home=True` 时自动 no-op（copytree 已包含 sync 效果）；`/api/rebuild` 和 `/api/admin/rebuild` 都接受 `syncTemplate` 字段。前端三选一互斥（reset_home 超集 / sync_template 增量 / reset_scratch 子集），勾一个清掉另外两个，避免误以为三个能同时生效。文档 §16 重写为 4 行 markdown 表说明各选项 + 包含关系 + 典型用例。 |
+| 2026-07-22 | **修 step2 URL/password 复制按钮无效**：旧实现 `navigator.clipboard.writeText()` 在非 secure context（HTTP 的 192.168.1.2:9900）直接抛 "Document is not focused" / 权限拒绝，被 catch 静默吞掉 —— 用户看到 "已复制 ✓" 但实际啥也没复制。改成两段式：1) secure context 优先走 `navigator.clipboard.writeText`；2) fallback 用隐藏 `<textarea>` + `document.execCommand("copy")`（HTTP 上仍能工作，所有浏览器都还支持）。失败时按钮文案改为"复制失败 — 手动选"而不是假装成功。 |
+| 2026-07-22 | **显式设 `SESSION_COOKIE_SAMESITE = "Lax"` 修 Chrome admin 401 症状**：用户报 F12 → Application 看到 session cookie，但后续 /api/admin/containers 请求不带 → 401。根因：Flask 默认 SESSION_COOKIE_SAMESITE=None → Set-Cookie 不输出 SameSite 属性 → Chrome 80+ 对"没写 SameSite 的 cookie"按 Lax 处理，但**对纯 IP 地址（192.168.1.2 这种）**新版 Chrome site 算法古怪，会拒绝发送。显式设 Lax 后 Set-Cookie 带 `SameSite=Lax`，行为可预期。**和今天的代码改动无关**——curl 测一切正常，问题在浏览器对 IP 的处理策略收紧。修复：app.py 里加 `app.config["SESSION_COOKIE_SAMESITE"] = "Lax"`，portal 镜像重建并 `docker compose up -d portal` 重启。 |
+| 2026-07-22 | **镜像装齐 anthropics/skills（docx/pptx/xlsx/pdf）依赖 + 常用系统工具 + Claude Code 2.1.217**：补 apt 包 `unzip/zip/xz-utils/bzip2/p7zip-full/jq/poppler-utils/qpdf/tesseract-ocr+tesseract-ocr-chi-sim+eng/pandoc/imagemagick/libreoffice/python3+python3-pip/coreutils/fonts-noto-cjk+fonts-liberation+fonts-dejavu`；补 pip 包 `pypdf/pdfplumber/pdf2image/pytesseract/reportlab/pypdfium2/Pillow/markitdown[pptx]/python-pptx/defusedxml/lxml/openpyxl/pandas`；补 npm 包 `docx/pptxgenjs/react/react-dom/react-icons/sharp`。vendor 替换 `Anthropic.claude-code-2.1.216@linux-x64.vsix` → `Anthropic.claude-code-2.1.217@linux-x64.vsix`，DEPLOY.md/ARCHITECTURE.md 同步版本号。镜像预计从 ~782MB → ~1.4GB（libreoffice ~280MB + pandoc ~80MB + tesseract ~50MB 是大头） |
 | 2026-07-21 | **vendor 升级到 anthropic.claude-code@2.1.216**：跟市场推送同步；跟 2.1.215 相比改了 6 个文件（`extension.js` + `claude-code-settings.schema.json` + `package.json` 内容文本重排 + `resources/native-binary/claude` 二进制 + `webview/index.{js,css}`），功能上是普通 bug fix + UI 调整 + schema 更新，**未引入 `dist/browser/extension.js` web bundle**（web mode 激活限制保持不变）；同时清理 vendor：删掉旧 `anthropic.claude-code.vsix`(2.1.214) + `*.vsix.bak` 备份——避免 COPY 时多版同 ID 冲突。镜像 hash `ad0cc62a`（其他层全 cache 命中，仅 COPY .vsix 层重做） |
 | 2026-07-20 | **精简 claude-code 镜像**：移除 `unified_db_mcp.ts`（MySQL+Oracle 只读 SQL MCP）+ `mysql2`/`oracledb`/`@modelcontextprotocol/sdk`/`zod`/`mcp-remote`/`tsx` npm 包 + Dockerfile 里的 `libaio1` apt 依赖 + portal/app.py 里的 Oracle Instant Client bind / `LD_LIBRARY_PATH` env；对应 .env.example / .env / docker-compose.yml / DEPLOY.md / 附录 B 全部同步清理。镜像从 793MB → 782MB（压缩）；运行时不再 bind `/opt/oracle/instantclient` ~200MB 内存/容器也省下。保留 claude-code npm vsix @ 2.1.215 + code-server 4.129.0 + Node 22.23.1 LTS（Jod）—— 都是当前最新。`git log` 这次大改：源码/配置/文档全部统一推进；存量用户 home 目录里的旧 mcp 残留不影响新容器启动（每容器重建后都用新 entrypoint）|

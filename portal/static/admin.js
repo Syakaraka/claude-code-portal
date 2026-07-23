@@ -131,6 +131,14 @@ function renderRows(items, meta) {
     const limit  = meta?.limit  ?? 0;
     const limitStr = limit > 0 ? `${active} / ${limit}` : `${active}`;
     listMeta.textContent = `活跃 ${limitStr} · 共 ${items.length}`;
+    // 记住重渲前哪些行有展开面板（setInterval 5s 自动 refresh 会重写整个 HTML，
+    // 不保留的话 admin 正在勾选项就被折叠了，UX 没法用）
+    const expanded = {
+        delete:   new Set(),
+        rebuild:  new Set(),
+    };
+    rowsEl.querySelectorAll(".trow.expanded").forEach(r => expanded.delete.add(r.dataset.uid));
+    rowsEl.querySelectorAll(".trow.expanded-rebuild").forEach(r => expanded.rebuild.add(r.dataset.uid));
     if (!items.length) {
         rowsEl.innerHTML = `
             <div class="empty">
@@ -140,6 +148,15 @@ function renderRows(items, meta) {
         return;
     }
     rowsEl.innerHTML = items.map(c => rowHtml(c)).join("");
+    // 恢复展开状态
+    for (const uid of expanded.delete) {
+        const row = rowsEl.querySelector(`.trow[data-uid="${CSS.escape(uid)}"]`);
+        if (row) row.classList.add("expanded");
+    }
+    for (const uid of expanded.rebuild) {
+        const row = rowsEl.querySelector(`.trow[data-uid="${CSS.escape(uid)}"]`);
+        if (row) row.classList.add("expanded-rebuild");
+    }
 
     rowsEl.querySelectorAll("[data-action]").forEach(btn => {
         btn.addEventListener("click", () => handleAction(btn));
@@ -178,9 +195,40 @@ function rowHtml(c) {
             <span><span class="tag ${tagCls}">${escapeHtml(c.status || "—")}</span></span>
             <span class="age">${escapeHtml(timeAgo(c.last_seen))}</span>
             <span class="actions">
+                <button class="btn btn-primary btn-sm" data-action="rebuild-toggle">重建 ▼</button>
                 ${status === "running" ? `<button class="btn btn-ghost btn-sm" data-action="stop">停止</button>` : ""}
                 <button class="btn btn-warn btn-sm" data-action="delete-toggle">删除 ▼</button>
             </span>
+            <div class="row-panel row-panel-rebuild">
+                <div class="opts-title opts-title-info">重建选项</div>
+                <div class="opts">
+                    <label>
+                        <input type="checkbox" data-opt="resetHome">
+                        <span>
+                            <div class="opt-title">同时清空用户目录</div>
+                            <div class="opt-desc">删除 volumes/users/&lt;uid&gt;/ 全部数据并从模板重建（设置、扩展、对话缓存、显示名称 meta、固定端口 .port 全部清空）。<b>隐含清空临时目录</b>。</div>
+                        </span>
+                    </label>
+                    <label>
+                        <input type="checkbox" data-opt="syncTemplate">
+                        <span>
+                            <div class="opt-title">同步模板（增量）</div>
+                            <div class="opt-desc">把 volumes/node/ 的内容<b>增量同步</b>到用户目录：模板里有的覆盖，模板里没有的保留（对话历史 / 扩展缓存 / settings 全部保留）。<b>管理员改了模板想推给用户时用</b>。</div>
+                        </span>
+                    </label>
+                    <label>
+                        <input type="checkbox" data-opt="resetScratch">
+                        <span>
+                            <div class="opt-title">同时清空临时目录</div>
+                            <div class="opt-desc">删除 volumes/users/&lt;uid&gt;/scratch 全部数据（仅临时区，保留 settings/扩展、.port）。<b>包含在"清空用户目录"里</b>，不要同时勾。</div>
+                        </span>
+                    </label>
+                </div>
+                <div class="opts-actions">
+                    <button class="btn btn-ghost btn-sm" data-action="cancel">取消</button>
+                    <button class="btn btn-primary btn-sm" data-action="rebuild-confirm">确认重建</button>
+                </div>
+            </div>
             <div class="row-panel">
                 <div class="opts-title">⚠ 删除选项</div>
                 <div class="opts">
@@ -233,13 +281,58 @@ async function handleAction(btn) {
         }
         return;
     }
+    if (action === "rebuild-toggle") {
+        // 重建面板和删除面板互斥 —— 展开一个先收起另一个
+        const wasExpanded = row.classList.contains("expanded-rebuild");
+        row.classList.remove("expanded");
+        row.classList.toggle("expanded-rebuild", !wasExpanded);
+        return;
+    }
     if (action === "delete-toggle") {
         // 展开 / 收起删除选项面板（同一行的二级确认）
-        row.classList.toggle("expanded");
+        const wasExpanded = row.classList.contains("expanded");
+        row.classList.remove("expanded-rebuild");
+        row.classList.toggle("expanded", !wasExpanded);
         return;
     }
     if (action === "cancel") {
         row.classList.remove("expanded");
+        row.classList.remove("expanded-rebuild");
+        return;
+    }
+    if (action === "rebuild-confirm") {
+        const resetHome    = !!row.querySelector('[data-opt="resetHome"]').checked;
+        const syncTemplate = !!row.querySelector('[data-opt="syncTemplate"]').checked;
+        const resetScratch = !!row.querySelector('[data-opt="resetScratch"]').checked;
+        // 描述里体现选了哪个：reset_home 超集 / sync_template 增量 / reset_scratch 子集
+        const what = resetHome    ? "（同时清空用户目录）" :
+                     syncTemplate ? "（增量同步模板）" :
+                     resetScratch ? "（同时清空临时目录）" : "";
+        if (!confirm(`重建 ${uid.slice(0,8)}…${what}？`)) return;
+        const confirmBtn = row.querySelector('[data-action="rebuild-confirm"]');
+        if (confirmBtn) confirmBtn.disabled = true;
+        setStatus(listStatus, `重建 ${uid.slice(0,8)}…`);
+        const resp = await authFetch("/api/admin/rebuild", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ userId: uid, resetHome, syncTemplate, resetScratch }),
+        });
+        try {
+            const data = await resp.json();
+            if (!resp.ok || data.error) {
+                setStatus(listStatus, `重建失败：${data.error || resp.statusText}`, "error");
+            } else {
+                setStatus(
+                    listStatus,
+                    `✅ 已重建 ${uid.slice(0,8)}… 新端口=${data.port} 密码=${data.password} — 把新端口+密码告诉用户`,
+                    "success"
+                );
+                row.classList.remove("expanded-rebuild");
+            }
+        } finally {
+            if (confirmBtn) confirmBtn.disabled = false;
+            refresh();
+        }
         return;
     }
     if (action === "delete-confirm") {

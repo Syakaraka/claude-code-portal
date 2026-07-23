@@ -331,7 +331,7 @@ body {
 }
 
 /* row action panel */
-.trow.expanded { background: #FCFCFA; }
+.trow.expanded, .trow.expanded-rebuild { background: #FCFCFA; }
 .row-panel {
     grid-column: 1 / -1;
     padding: 14px 0 6px;
@@ -339,7 +339,12 @@ body {
     margin-top: 12px;
     display: none;
 }
-.trow.expanded .row-panel { display: block; }
+/* 删除面板：只在 .expanded 单独存在时显示 —— :not(.expanded-rebuild) 防止点
+   删除时重建面板也被 .row-panel 通用规则选中而同时展开 */
+.trow.expanded:not(.expanded-rebuild) .row-panel:not(.row-panel-rebuild) { display: block; }
+/* 重建面板：独立 class 显示控制 —— 跟删除面板互斥展开（JS 里 toggle 时互关） */
+.row-panel-rebuild { display: none; }
+.trow.expanded-rebuild .row-panel-rebuild { display: block; }
 .row-panel .opts-title {
     font-family: var(--mono);
     font-size: 11px;
@@ -348,6 +353,7 @@ body {
     color: var(--rust);
     margin-bottom: 8px;
 }
+.row-panel .opts-title.opts-title-info { color: var(--cobalt); }
 .row-panel .opts {
     display: flex;
     flex-direction: column;

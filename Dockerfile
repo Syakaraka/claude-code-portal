@@ -5,7 +5,7 @@ FROM node:22-slim
 ARG APT_MIRROR=
 ARG NPM_REGISTRY=https://registry.npmmirror.com/
 
-# 1. 配置 APT 镜像源 (安装 git, ca-certificates)
+# 1. 配置 APT 镜像源
 RUN if [ -n "${APT_MIRROR}" ]; then \
       sed -i "s|deb.debian.org|${APT_MIRROR}|g; s|security.debian.org|${APT_MIRROR}|g" \
         /etc/apt/sources.list \
@@ -19,13 +19,49 @@ RUN apt-get update \
         ca-certificates \
         curl \
         openssl \
+        # === 压缩解压（node:22-slim 基础镜像没带）===
+        unzip zip xz-utils bzip2 p7zip-full \
+        # === 文档/PDF 工具链（anthropics/skills 的 docx/pptx/xlsx/pdf 共用）===
+        poppler-utils qpdf pandoc \
+        # === OCR（pdf skill 做扫描件识别）===
+        tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-eng \
+        # === 图像处理 ===
+        imagemagick \
+        # === LibreOffice：docx/pptx/xlsx 互转 + xlsx 公式重算必备 ===
+        libreoffice \
+        # === Python 运行时：anthropics/skills 几乎所有脚本都是 Python ===
+        python3 python3-pip \
+        # === 文本 / JSON 处理 ===
+        jq \
+        # === 字体：让 soffice 渲染的 PDF 不出现 □□ 方块（Noto CJK = 中文）===
+        fonts-noto-cjk fonts-liberation fonts-dejavu \
  && rm -rf /var/lib/apt/lists/*
 
-# 2. 配置 NPM 镜像源并安装 Claude Code
+# 2. Python pip: anthropics/skills 运行时依赖
+# 用 --break-system-packages：Debian bookworm 的 python3 是 EXTERNALLY-MANAGED（PEP 668）
+# 用 --no-cache-dir：避免 .cache 占镜像层
+RUN pip install --no-cache-dir --break-system-packages \
+        # pdf skill
+        pypdf pdfplumber pdf2image pytesseract reportlab pypdfium2 \
+        # pptx/docx skill（validate.py / helpers 都靠 defusedxml + lxml）
+        "markitdown[pptx]" python-pptx defusedxml lxml Pillow \
+        # xlsx skill（openpyxl 读写 xlsx，pandas 给 markitdown 兜底）
+        openpyxl pandas
+
+# 3. 配置 NPM 镜像源 + 全局安装 Claude Code + skills 用的 Node 包
 RUN npm config set registry "${NPM_REGISTRY}"
+
+# 让 `node script.js`（Claude Code 跑 skill 脚本时）能找到全局 npm 包
+# 路径必须是 `npm root -g` 的真实输出（Debian 上是 /usr/local/lib/node_modules，
+# 不是 /usr/lib/node_modules；某些 sandbox 会清 env，显式设一次最稳）
+ENV NODE_PATH=/usr/local/lib/node_modules
 
 RUN npm install -g \
         @anthropic-ai/claude-code@latest \
+        # docx skill：用 docx-js 创建新文档
+        docx \
+        # pptx skill：pptxgenjs 生成新 deck；react/react-dom/react-icons 给 react-icons 图标走 ReactDOMServer.renderToStaticMarkup；sharp 给 SVG 栅格化
+        pptxgenjs react react-dom react-icons sharp \
  && npm cache clean --force
 
 # 安装 code-server（浏览器里的 VS Code），启动后用户在终端里手动跑 `claude`
@@ -56,7 +92,7 @@ COPY --chown=node:node vendor/*.vsix /tmp/extensions/
 # KEY_FILE env var 让 entrypoint.sh 传给 code-server --cert / --cert-key。
 # 覆盖路径而不是改 /etc/code-server 目录属性，避免碰 root 拥有的目录。
 
-# 3. 准备工作区
+# 5. 准备工作区
 RUN mkdir -p /workspace \
  && chown -R node:node /workspace
 
