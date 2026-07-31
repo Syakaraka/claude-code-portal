@@ -1,16 +1,29 @@
-# syntax=docker/dockerfile:1.7
+# 注：不写 # syntax=docker/dockerfile:1.7 —— BuildKit 走 frontend image 模式会
+# 每次 build 都拉 docker.io/docker/dockerfile:1.7（国内 40+ 秒/次）。省掉这行让
+# Docker daemon 用内建 frontend，省一次大镜像拉取。功能上 1.7 特性已用不到。
 
 FROM node:22-slim
 
-ARG APT_MIRROR=
+# 默认走清华源；海外/直连环境构建时传 `--build-arg APT_MIRROR=deb.debian.org` 切回官方
+# 注意：用 http:// 而不是 https:// —— node:22-slim 默认没装 ca-certificates，
+# 第一次 apt update 时 HTTPS 握手证书验证失败。清华源 HTTP 也通且一样快（内网源不分 HTTP/HTTPS 性能）
+ARG APT_MIRROR=mirrors.tuna.tsinghua.edu.cn
+# npm 默认已经是 npmmirror；想用官方源传 --build-arg NPM_REGISTRY=https://registry.npmjs.org/
 ARG NPM_REGISTRY=https://registry.npmmirror.com/
 
 # 1. 配置 APT 镜像源
+# debian bookworm 的 sources 格式可能是：
+#   - 旧格式 /etc/apt/sources.list: `deb http://deb.debian.org/debian bookworm main`
+#   - 新格式 /etc/apt/sources.list.d/debian.sources: `URIs: https://deb.debian.org/debian`
+# 用 sed -E 只替换主机名（保留 scheme + path），两种格式都能命中
 RUN if [ -n "${APT_MIRROR}" ]; then \
-      sed -i "s|deb.debian.org|${APT_MIRROR}|g; s|security.debian.org|${APT_MIRROR}|g" \
+      sed -i -E "s|https?://deb\.debian\.org|http://${APT_MIRROR}|g; \
+                 s|https?://security\.debian\.org|http://${APT_MIRROR}|g" \
         /etc/apt/sources.list \
         /etc/apt/sources.list.d/*.list \
         /etc/apt/sources.list.d/*.sources 2>/dev/null || true; \
+      echo "[apt-mirror] APT_MIRROR=${APT_MIRROR}"; \
+      cat /etc/apt/sources.list.d/debian.sources 2>/dev/null | head -3; \
     fi
 
 RUN apt-get update \
@@ -40,7 +53,12 @@ RUN apt-get update \
 # 2. Python pip: anthropics/skills 运行时依赖
 # 用 --break-system-packages：Debian bookworm 的 python3 是 EXTERNALLY-MANAGED（PEP 668）
 # 用 --no-cache-dir：避免 .cache 占镜像层
+# 国内构建环境拉 pypi.org 经常超时 → 默认走清华源 + 加重试/超时。
+# 海外/直连环境想退回官方源，把 --index-url 这一行删掉即可。
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 RUN pip install --no-cache-dir --break-system-packages \
+        --index-url "${PIP_INDEX_URL}" \
+        --retries 10 --timeout 100 \
         # pdf skill
         pypdf pdfplumber pdf2image pytesseract reportlab pypdfium2 \
         # pptx/docx skill（validate.py / helpers 都靠 defusedxml + lxml）
@@ -69,7 +87,7 @@ RUN npm install -g \
 # github.com 在构建环境里不通，本地预下载到 ./vendor/ 后 COPY 进来，省掉单次构建 9 分钟等镜像下载
 #   - 文件缺失时改用下方 curl + ghproxy.net 兜底（ARG CODE_SERVER_VERSION 需保持一致）
 #   - vendor/ 已加入 .gitignore，不入库
-ARG CODE_SERVER_VERSION=4.129.0
+ARG CODE_SERVER_VERSION=4.131.0
 COPY vendor/code-server_${CODE_SERVER_VERSION}_amd64.deb /tmp/code-server.deb
 RUN dpkg -i /tmp/code-server.deb \
  && rm /tmp/code-server.deb \

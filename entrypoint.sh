@@ -20,7 +20,7 @@
 #      （portal 会动态生成带正确 SAN 的证书 bind 进来；env 没设就用镜像默认 cert）
 #   7. exec code-server "$@"（用 exec 让自己被 code-server 取代，保证 PID 1 信号处理）
 #
-# 为什么不在 Dockerfile 里装：code-server v4.129.0 不再支持 config.yaml 里的
+# 为什么不在 Dockerfile 里装：code-server v4.131.0 不再支持 config.yaml 里的
 # extensions-gallery 字段，且默认 Open VSX 在国内构建环境拉不到；从本地 .vsix 装
 # 可以在容器启动时离线完成，首启稍慢但稳。
 #
@@ -63,6 +63,14 @@ fi
 #   - anthropic.claude-code publisher untrusted → Claude Code 不能激活 → 打不开
 #   - ms-ceintl.vscode-language-pack-zh-hans 同理 → --locale=zh-cn 也没用，UI 永远英文
 # 禁掉 workspace trust 是最干净的解法（内部工具，没必要弹 trusted workspace 提示）
+#
+# 同时一刀切禁用所有 AI 入口（VS Code 内置 chat + 防 Copilot 扩展被装上 + inline suggest）：
+#   - chat.disableAIFeatures: 关掉 VS Code 自带的 Chat view / inline chat（1.93+ 的官方 ID）
+#   - github.copilot.enable={"*":false}: 总开关，作用域 map 写法，全工作区关
+#   - github.copilot.chat.enabled: Copilot chat 子模块再挡一次（vscode 有些版本 copilot.enable
+#     设 false 后 Copilot Chat 视图还会残留）
+#   - inlineSuggest.enabled: 关掉所有内联补全 ghost text（任何 LSP 都能往里塞补全，
+#     Copilot 也走这条通道；想留自定义 LSP 补全就把这条删掉）
 # 已存在则不动（保留用户手动改过的设置）
 cs_user_dir="$HOME/.local/share/code-server/User"
 cs_settings="$cs_user_dir/settings.json"
@@ -75,10 +83,14 @@ if [ ! -f "$cs_settings" ]; then
         "anthropic.claude-code": true,
         "ms-ceintl.vscode-language-pack-zh-hans": true
     },
-    "extensions.autoUpdate": false
+    "extensions.autoUpdate": false,
+    "chat.disableAIFeatures": true,
+    "github.copilot.enable": { "*": false },
+    "github.copilot.chat.enabled": false,
+    "inlineSuggest.enabled": false
 }
 EOF
-    echo "[entrypoint] wrote User/settings.json (workspace trust disabled, publishers pre-trusted)"
+    echo "[entrypoint] wrote User/settings.json (workspace trust disabled, publishers pre-trusted, all AI features disabled)"
 fi
 
 # 写 argv.json：vscode 启动时按这个文件的 locale 字段决定 UI 语言
@@ -114,7 +126,7 @@ fi
 #        → 阻塞 scanExtensions → _resolveExtensionsDefault 流程
 #        → anthropic.claude-code 等第三方扩展被过滤掉、图标永远不出现
 #   - label: localizedLanguageName ?? languageName（createQuickPickItem 用）
-# 缺 extensions 或 label 时 code-server 4.129.0 在 scanExtensions 阶段抛错，
+# 缺 extensions 或 label 时 code-server 4.131.0 在 scanExtensions 阶段抛错，
 # 不只是语言包加载失败，会让整个扩展列表都解析不出来。
 # 已存在则不动（用户可能手动改过语言）
 cs_data_dir="$HOME/.local/share/code-server"

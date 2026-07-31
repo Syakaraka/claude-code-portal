@@ -374,7 +374,75 @@ def ensure_user_dir(user_id: str, wipe: bool = False) -> str:
     # node 用户没法 chmod/rm，容器内 /home/node/scratch 也建不了 sticky bit。
     # thomas 在 host 端仍有父目录 0777 写权限，可以 rm 任何子文件。
     _chown_recursive(path, uid=1000, gid=1000)
+    # 强制注入 AI 禁用 setting（chat.disableAIFeatures 等四个 key）。
+    # 无论模板 / 老用户 home 状态如何，merge 进用户的 User/settings.json（没有就建）。
+    # 保留用户改过的其他 key，只覆盖我们要的 4 条；这样比"模板里写了就行"更稳：
+    #   - 老用户 home 已有 settings.json 但不含这些 key → 自动补
+    #   - 模板文件被改 / 缺失 → 仍然写
+    #   - 用户手动清掉 settings.json → 启动时自动恢复
+    _enforce_ai_disabled_settings(path)
     return path
+
+
+# AI 禁用 setting 的目标值。集中在一处方便以后调整（比如想放开 inline suggest 就删一条）
+_AI_DISABLED_SETTINGS = {
+    "chat.disableAIFeatures": True,
+    "github.copilot.enable": {"*": False},
+    "github.copilot.chat.enabled": False,
+    "inlineSuggest.enabled": False,
+}
+# code-server 的 User/settings.json 在 home 内的相对路径
+_CS_SETTINGS_RELPATH = ".local/share/code-server/User/settings.json"
+
+
+def _enforce_ai_disabled_settings(user_dir: str) -> None:
+    """把 4 个 AI 禁用 key 合并进 user_dir/.local/share/code-server/User/settings.json。
+
+    行为：
+      - 路径不存在 → 创建空 {}，再合并目标值（相当于"无中生有"补一份）
+      - 路径存在但解析失败（不是合法 JSON）→ 留个 WARN 日志，不动原文件（避免误清空
+        用户手动写的内容），返回
+      - 路径存在且合法 → 用现有对象做底，update 目标 4 条 key 后原子写回（写临时文件
+        + os.replace，避免半写状态被 claude 容器读到）
+
+    幂等：调用 N 次效果同调用 1 次。失败仅 WARN，不阻断 ensure_user_dir。
+    """
+    cs_settings = os.path.join(user_dir, _CS_SETTINGS_RELPATH)
+    try:
+        existing = {}
+        if os.path.exists(cs_settings):
+            try:
+                with open(cs_settings, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+                if not isinstance(existing, dict):
+                    app.logger.warning(
+                        f"_enforce_ai_disabled_settings: {cs_settings} root is "
+                        f"{type(existing).__name__}, not object; skipping merge"
+                    )
+                    return
+            except json.JSONDecodeError as e:
+                app.logger.warning(
+                    f"_enforce_ai_disabled_settings: {cs_settings} JSON parse failed "
+                    f"({e}); leaving untouched"
+                )
+                return
+        else:
+            os.makedirs(os.path.dirname(cs_settings), exist_ok=True)
+        # merge：现有 key 全保留，只覆盖/补齐我们要的 4 条
+        existing.update(_AI_DISABLED_SETTINGS)
+        # 原子写：先写临时文件再 rename，避免并发读到半写
+        tmp = cs_settings + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(existing, f, ensure_ascii=False, indent=4)
+        os.replace(tmp, cs_settings)
+        # chown 1000:1000：跟 _chown_recursive 一致（portal 当前是 root，新建文件默认 root 拥有，
+        # 容器内 node 用户可能想改 settings.json 时要能改）。失败仅 WARN
+        try:
+            os.chown(cs_settings, 1000, 1000)
+        except (PermissionError, OSError):
+            pass
+    except Exception as e:
+        app.logger.warning(f"_enforce_ai_disabled_settings: {user_dir} failed: {e}")
 
 
 def _chown_recursive(path: str, uid: int, gid: int) -> None:
@@ -442,6 +510,8 @@ def sync_template_to_user(user_id: str) -> int:
     # chown 1000:1000 也是为了让容器内 node 用户对新复制/创建的目录有写权限。
     _chmod_user_dir(user_dir)
     _chown_recursive(user_dir, uid=1000, gid=1000)
+    # 同样兜底注入 AI 禁用 setting（确保同步模板路径下也生效；幂等）
+    _enforce_ai_disabled_settings(user_dir)
 
     app.logger.info(
         f"sync_template_to_user: {user_id[:8]}... copied={copied} failed={failed}"
@@ -846,6 +916,7 @@ _PORTAL_GATE_EXEMPT = (
     "/api/portal/logout",
     "/admin",             # admin 页面 + /api/admin/*：自带 ADMIN_PASSWORD 认证
     "/api/admin/",
+    "/install-cert",      # CA 证书下载：未登录也要能拿到，否则新用户没法登录后访问 code-server
 )
 
 
