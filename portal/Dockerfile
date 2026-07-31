@@ -10,7 +10,12 @@ ENV PORTAL_CONTAINER_PORT=${PORTAL_CONTAINER_PORT}
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# 国内构建环境拉 pypi.org 经常超时 → 默认走清华源 + 加重试/超时。
+# 海外/直连环境想退回官方源，把 --index-url 这一行删掉即可。
+RUN pip install --no-cache-dir \
+        --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+        --retries 10 --timeout 100 \
+        -r requirements.txt
 
 COPY app.py ./
 COPY templates/ ./templates/

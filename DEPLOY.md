@@ -273,6 +273,11 @@ CLAUDE_PORT_MAX=9999
 # 管理员密码（新机器一定要换，不要沿用旧的）
 ADMIN_PASSWORD=改成强密码
 
+# 门户访问密码（可选）：留空 = 免登录，谁能访问 9900 谁就能起容器；
+# 填了 = 打开首页先要输这个密码，未登录时 /api/* 也一律 401。
+# 内网可以不填；挂到公网 / 半开放网络上建议填。
+PORTAL_PASSWORD=
+
 # Flask session 密钥（强烈建议显式设；不设 portal 会从 HOST_PROJECT_DIR 派生，
 # 迁移后旧 cookie 会失效——但一般没人保留旧 cookie，所以问题不大）
 FLASK_SECRET=$(python3 -c "import secrets; print(secrets.token_urlsafe(48))")
@@ -404,6 +409,7 @@ docker compose down -v
 - [ ] 浏览器访问 `http://新机器IP:9900/` 能看到门户
 - [ ] 浏览器访问 `http://新机器IP:9900/install-cert` 能下载 CA
 - [ ] `/admin` 能用 `ADMIN_PASSWORD` 登录
+- [ ] 若设了 `PORTAL_PASSWORD`：首页先出密码门，输对后才进门户
 
 ---
 

@@ -61,6 +61,15 @@ function clearStatus(targetEl) {
     targetEl.innerHTML = "";
 }
 
+// 设了 PORTAL_PASSWORD 时，session 过期后 /api/* 会回 401。
+// 直接 reload：同一个 URL 服务端这次渲染密码门，用户重输密码即可，
+// 不用让人对着一句 "未登录" 的红字发愣。未设密码时后端不会产生 401。
+function handleGate401(resp) {
+    if (resp.status !== 401) return false;
+    location.reload();
+    return true;
+}
+
 function setPill(state, label) {
     statusPill.className = "status-pill" + (state ? " is-" + state : "");
     statusText.textContent = label;
@@ -188,6 +197,7 @@ async function handleSubmit(creds, isResubmit) {
                 resetHome, syncTemplate, resetScratch,
             }),
         });
+        if (handleGate401(resp)) return;
         const data = await resp.json();
 
         if (!resp.ok || data.error) {
@@ -402,6 +412,7 @@ if (renameSave) {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ apiKey: creds.apiKey, displayName: newName }),
             });
+            if (handleGate401(resp)) return;
             const data = await resp.json();
             if (!resp.ok || data.error) {
                 setStatus(statusEl2, `❌ 改名失败：${data.error || resp.statusText}`, "error");
@@ -440,6 +451,7 @@ rebuildConfirm.addEventListener("click", async () => {
                 resetScratch: resetScratchEl.checked,
             }),
         });
+        if (handleGate401(resp)) return;
         const data = await resp.json();
         if (!resp.ok || data.error) {
             setStatus(statusEl2, `❌ 重建失败：${data.error || resp.statusText}`, "error");

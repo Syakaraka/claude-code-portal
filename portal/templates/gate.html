@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Claude Code · Portal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* =============================================================================
+   Claude Code Portal — 密码门（PORTAL_PASSWORD 已设且未登录时渲染）
+   =============================================================================
+   token / 排版沿用 login.html（paper·ink·cobalt + JetBrains Mono / IBM Plex Sans），
+   只带这一页需要的那部分样式 —— 未登录用户拿不到门户页面的任何结构与文案。
+*/
+:root {
+    --paper:    #FAFAF7;
+    --surface:  #FFFFFF;
+    --ink:      #111418;
+    --mid:      #4A5260;
+    --muted:    #6B7280;
+    --hairline: #DDD9CF;
+    --hairline-strong: #C9C4B6;
+    --cobalt:   #1A4FDB;
+    --cobalt-2: #163DAE;
+    --crimson:  #B91C1C;
+
+    --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "PingFang SC",
+            "Microsoft YaHei", "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", Consolas, "Courier New", monospace;
+
+    --r-sm: 2px;
+    --r-md: 4px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+/* ---------------- ticket strip (signature element) ---------------- */
+.ticket-strip {
+    background: var(--surface);
+    border-bottom: 1px solid var(--hairline);
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--mid);
+}
+.ticket-strip .left,
+.ticket-strip .right { display: flex; align-items: center; gap: 14px; }
+.ticket-strip .mono-block { font-weight: 600; color: var(--ink); }
+.ticket-strip .sep { color: var(--hairline-strong); }
+.status-pill { display: inline-flex; align-items: center; gap: 6px; color: var(--mid); }
+.status-pill .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--hairline-strong);
+}
+
+/* ---------------- canvas + card ---------------- */
+.canvas {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 60px 20px;
+}
+.workorder { width: 100%; max-width: 460px; }
+.card {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-md);
+    padding: 28px 28px 24px;
+}
+.card-title {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--mid);
+    margin-bottom: 4px;
+}
+.card-h1 {
+    font-family: var(--mono);
+    font-size: 19px;
+    font-weight: 600;
+    color: var(--ink);
+    margin-bottom: 8px;
+    line-height: 1.3;
+}
+.card-sub {
+    color: var(--mid);
+    font-size: 13px;
+    margin-bottom: 22px;
+    line-height: 1.55;
+}
+
+/* ---------------- form ---------------- */
+.field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.field-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--mid);
+}
+.field input {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--hairline-strong);
+    border-radius: var(--r-sm);
+    padding: 10px 12px;
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 13px;
+    transition: border-color 0.12s, background 0.12s;
+}
+.field input::placeholder { color: var(--muted); font-family: var(--mono); }
+.field input:focus {
+    outline: none;
+    border-color: var(--cobalt);
+    background: #FCFCFA;
+    box-shadow: 0 0 0 3px rgba(26, 79, 219, 0.12);
+}
+.actions { display: flex; gap: 10px; margin-top: 18px; align-items: center; }
+.btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    border-radius: var(--r-sm);
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: background 0.12s, opacity 0.12s;
+}
+.btn-primary { background: var(--cobalt); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--cobalt-2); }
+.btn-primary:disabled { opacity: 0.55; cursor: wait; }
+
+.status {
+    margin-top: 14px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--mid);
+    min-height: 18px;
+}
+.status.error { color: var(--crimson); }
+</style>
+</head>
+<body>
+
+<div class="ticket-strip">
+    <div class="left">
+        <span>CLAUDE · CODE</span>
+        <span class="sep">/</span>
+        <span class="mono-block">TICKET #————</span>
+    </div>
+    <div class="right">
+        <span class="status-pill"><span class="dot"></span><span>LOCKED</span></span>
+    </div>
+</div>
+
+<div class="canvas">
+    <div class="workorder">
+        <div class="card">
+            <div class="card-title">访问受限</div>
+            <h1 class="card-h1">请输入访问密码</h1>
+            <p class="card-sub">
+                本 portal 已开启密码保护。输入访问密码后即可继续启动你的沙箱容器。
+            </p>
+
+            <form id="gate-form" autocomplete="off">
+                <div class="field">
+                    <div class="field-label">访问密码</div>
+                    <input name="password" type="password" required autofocus
+                           placeholder="访问密码" autocomplete="current-password">
+                </div>
+                <div class="actions">
+                    <button type="submit" class="btn btn-primary" id="gate-btn">进入</button>
+                </div>
+            </form>
+
+            <div class="status" id="gate-status"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+// 提交密码 → /api/portal/login。成功后 reload：同一个 URL 这次会渲染门户页面。
+const form   = document.getElementById("gate-form");
+const btn    = document.getElementById("gate-btn");
+const status = document.getElementById("gate-status");
+
+function setStatus(msg, kind) {
+    status.textContent = msg || "";
+    status.className = "status" + (kind ? " " + kind : "");
+}
+
+form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const password = (new FormData(form).get("password") || "").toString();
+    btn.disabled = true;
+    setStatus("验证中…");
+    try {
+        const resp = await fetch("/api/portal/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ password }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            setStatus(`❌ ${data.error || resp.statusText}`, "error");
+            return;
+        }
+        setStatus("✅ 已验证，正在进入…");
+        location.reload();
+    } catch (err) {
+        setStatus(`❌ 网络错误：${err.message}`, "error");
+    } finally {
+        btn.disabled = false;
+        form.password.value = "";
+    }
+});
+</script>
+</body>
+</html>

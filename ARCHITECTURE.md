@@ -1135,6 +1135,48 @@ CSS：`.port .pin-tag { display: inline-block; margin-left: 4px; font-weight: 70
 
 ---
 
+## 21. 门户访问密码（`PORTAL_PASSWORD`）
+
+### 动机
+portal 首页本身是无认证的：谁能访问到 9900 端口，谁就能拉起一个容器、消耗宿主资源。
+内网部署时这没问题；一旦挂到公网 / 半开放网络上，就需要一道"谁能用这个 portal"的公共门。
+注意这不是 per-user 认证 —— 用户身份仍由各自的 API key 派生（§2），门只解决"外人进不来"。
+
+### 开关语义
+- `PORTAL_PASSWORD` 留空 / 未设 → **门禁整个不生效**，所有请求原样放行（旧部署零改动升级）
+- 设了值 → 未登录访问 `/` 得到密码门页面（HTTP 401 + `templates/gate.html`），
+  未登录访问 `/api/*` 得到 `401 {"error": "未登录或会话已过期"}`
+
+### 实现
+- **全局 `@app.before_request`（`portal_gate`）**，不是逐路由装饰器：
+  以后新增路由默认受保护，要放行必须显式写进 `_PORTAL_GATE_EXEMPT`——
+  方向上比"新加路由忘了加装饰器"安全。
+- **豁免前缀** `_PORTAL_GATE_EXEMPT`：
+  - `/static/` — 页面自己的 css/js
+  - `/api/portal/login`、`/api/portal/logout` — 登录入口本身（否则进不去）
+  - `/admin`、`/api/admin/` — 自带 `ADMIN_PASSWORD` 认证（§17），不串两道密码
+- **session 键与 admin 分开**：`session["portal"]` vs `session["admin"]`，同一套签名 cookie
+  机制与 `FLASK_SECRET`（§17 的多 worker 注意事项在这里同样成立）。
+- **`api_admin_login` 成功时顺带写 `session["portal"] = True`**：那里有一句
+  `session.clear()`，不补这一条，管理员登录 admin 后回首页会被要求重新输门户密码。
+- **防爆破**：与 admin 共用 `login_cooldown_check()` / `login_record_failure()`
+  （5 次 / 60 秒），但 **各用一个 IP 计数桶** —— 门户密码被撞冷却时不该把管理员一起锁在门外。
+- **有效期**：复用 `app.permanent_session_lifetime`，即 `ADMIN_SESSION_MAX_AGE`（默认 8h）。
+
+### 前端
+- `templates/gate.html`：独立页面，沿用 login.html 的设计 token，只带自己需要的样式。
+  选独立页而不是在 login.html 里加遮罩，是为了**未登录用户拿不到门户页面的任何结构与文案**。
+- `static/app.js` 的 `handleGate401(resp)`：session 过期后 API 回 401 → 直接 `location.reload()`，
+  服务端这次渲染密码门。未设密码时后端不会产生 401，这条分支永不触发。
+
+### 运维备注
+- 改 `PORTAL_PASSWORD` **不会**踢掉已登录的人（cookie 由 `FLASK_SECRET` 签名，不含密码）。
+  要强制全员重登，换 `FLASK_SECRET`。
+- 密码门只挡 portal 自己（9900）。用户容器的 code-server 端口（9901+）是另一套认证
+  （per-user 随机密码，§2），不受这里影响。
+
+---
+
 ## 附录 A：环境变量速查
 
 **Portal 容器**（从 `.env` 注入，详见 §15）：
@@ -1164,6 +1206,10 @@ CLAUDE_WORKSPACE_FILE_NAME      ${WORKSPACE_FILE_NAME}
 **Admin 鉴权**（§17）：
 - `ADMIN_PASSWORD` — 管理员密码；空字符串 → 整个 admin 路由 404（关闭管理面板）
 - `FLASK_SECRET` — Flask session 签名密钥；不设 portal 每次启动随机生成一个（仅 dev 可接受）
+
+**门户访问密码**（§21）：
+- `PORTAL_PASSWORD` — 门户公共密码；空字符串 → 免登录（默认，旧行为）
+- session 有效期复用 `ADMIN_SESSION_MAX_AGE`（默认 8h），签名密钥复用 `FLASK_SECRET`
 
 ---
 
@@ -1199,3 +1245,4 @@ CLAUDE_WORKSPACE_FILE_NAME      ${WORKSPACE_FILE_NAME}
 | 2026-07-22 | **镜像装齐 anthropics/skills（docx/pptx/xlsx/pdf）依赖 + 常用系统工具 + Claude Code 2.1.217**：补 apt 包 `unzip/zip/xz-utils/bzip2/p7zip-full/jq/poppler-utils/qpdf/tesseract-ocr+tesseract-ocr-chi-sim+eng/pandoc/imagemagick/libreoffice/python3+python3-pip/coreutils/fonts-noto-cjk+fonts-liberation+fonts-dejavu`；补 pip 包 `pypdf/pdfplumber/pdf2image/pytesseract/reportlab/pypdfium2/Pillow/markitdown[pptx]/python-pptx/defusedxml/lxml/openpyxl/pandas`；补 npm 包 `docx/pptxgenjs/react/react-dom/react-icons/sharp`。vendor 替换 `Anthropic.claude-code-2.1.216@linux-x64.vsix` → `Anthropic.claude-code-2.1.217@linux-x64.vsix`，DEPLOY.md/ARCHITECTURE.md 同步版本号。镜像预计从 ~782MB → ~1.4GB（libreoffice ~280MB + pandoc ~80MB + tesseract ~50MB 是大头） |
 | 2026-07-21 | **vendor 升级到 anthropic.claude-code@2.1.216**：跟市场推送同步；跟 2.1.215 相比改了 6 个文件（`extension.js` + `claude-code-settings.schema.json` + `package.json` 内容文本重排 + `resources/native-binary/claude` 二进制 + `webview/index.{js,css}`），功能上是普通 bug fix + UI 调整 + schema 更新，**未引入 `dist/browser/extension.js` web bundle**（web mode 激活限制保持不变）；同时清理 vendor：删掉旧 `anthropic.claude-code.vsix`(2.1.214) + `*.vsix.bak` 备份——避免 COPY 时多版同 ID 冲突。镜像 hash `ad0cc62a`（其他层全 cache 命中，仅 COPY .vsix 层重做） |
 | 2026-07-20 | **精简 claude-code 镜像**：移除 `unified_db_mcp.ts`（MySQL+Oracle 只读 SQL MCP）+ `mysql2`/`oracledb`/`@modelcontextprotocol/sdk`/`zod`/`mcp-remote`/`tsx` npm 包 + Dockerfile 里的 `libaio1` apt 依赖 + portal/app.py 里的 Oracle Instant Client bind / `LD_LIBRARY_PATH` env；对应 .env.example / .env / docker-compose.yml / DEPLOY.md / 附录 B 全部同步清理。镜像从 793MB → 782MB（压缩）；运行时不再 bind `/opt/oracle/instantclient` ~200MB 内存/容器也省下。保留 claude-code npm vsix @ 2.1.215 + code-server 4.129.0 + Node 22.23.1 LTS（Jod）—— 都是当前最新。`git log` 这次大改：源码/配置/文档全部统一推进；存量用户 home 目录里的旧 mcp 残留不影响新容器启动（每容器重建后都用新 entrypoint）|
+| 2026-07-31 | **门户访问密码 `PORTAL_PASSWORD`（§21）**：新增全局 `@app.before_request` 门禁 —— 未设该 env 时完全透明（旧部署零改动），设了则未登录访问 `/` 得到独立密码门页 `templates/gate.html`（401），未登录访问 `/api/*` 得到 401 JSON；豁免 `/static/`、`/api/portal/login|logout`、`/admin` + `/api/admin/*`（后者自带 ADMIN_PASSWORD 认证，不串两道密码）。session 键 `session["portal"]` 与 admin 分开，防爆破逻辑抽成 `login_cooldown_check()` / `login_record_failure()` 由两边共用但各用一个 IP 计数桶；`api_admin_login` 成功时顺带写 `session["portal"] = True`，避免其中的 `session.clear()` 把门户登录态一起清掉。前端 `app.js` 三处 fetch 加 `handleGate401()` → 401 时 reload 回密码门 |

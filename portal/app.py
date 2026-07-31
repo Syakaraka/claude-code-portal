@@ -160,10 +160,18 @@ app.secret_key = _app_secret
 # 不设或为空 → 禁用 admin 路由（/admin 返回 404）
 ADMIN_PASSWORD = _env("ADMIN_PASSWORD", "")
 
-# admin 登录失败计数（按客户端 IP，60 秒冷却）—— 简单防爆破
+# === 门户访问密码（保护 / 页面 + 所有 /api/*） ===
+# 不设或为空 → 完全免登录（旧部署行为原样保留，不需要改任何配置）
+# 设了 → 未登录访问 / 得到密码门页面，未登录访问 /api/* 得到 401
+# 注意：/admin 与 /api/admin/* 不受它管（自带 ADMIN_PASSWORD 认证，见下）
+PORTAL_PASSWORD = _env("PORTAL_PASSWORD", "")
+
+# 登录失败计数（按客户端 IP，60 秒冷却）—— 简单防爆破
 # 注意：gunicorn 多 worker 下每个 worker 各自一份计数器，不是全局严格限流；
 # 5 次 / worker 足够拖慢手动尝试，但不是真分布式防爆破（这是内部工具可接受）
-_admin_login_failures: dict[str, tuple[int, float]] = {}
+# admin 与 portal 各用一个桶：门户密码被撞冷却，不该把管理员一起锁在门外。
+_admin_login_failures:  dict[str, tuple[int, float]] = {}
+_portal_login_failures: dict[str, tuple[int, float]] = {}
 _ADMIN_MAX_ATTEMPTS = 5
 _ADMIN_LOCKOUT_SEC = 60.0
 
@@ -773,6 +781,31 @@ def rebuild_container(user_id: str, base_url: str, api_key: str,
     )
 
 
+# ---------- 登录防爆破（admin / portal 共用） ----------
+
+def login_cooldown_check(bucket: dict, ip: str) -> tuple[bool, float]:
+    """冷却检查。返回 (allowed, remain_sec)；allowed=False → 调用方回 429。
+
+    连续失败 _ADMIN_MAX_ATTEMPTS 次后锁 _ADMIN_LOCKOUT_SEC 秒；冷却期过了自动清零。
+    """
+    fails = bucket.get(ip)
+    if not fails:
+        return True, 0.0
+    count, last = fails
+    elapsed = time.time() - last
+    if count >= _ADMIN_MAX_ATTEMPTS and elapsed < _ADMIN_LOCKOUT_SEC:
+        return False, _ADMIN_LOCKOUT_SEC - elapsed
+    if elapsed >= _ADMIN_LOCKOUT_SEC:
+        bucket.pop(ip, None)
+    return True, 0.0
+
+
+def login_record_failure(bucket: dict, ip: str) -> None:
+    now = time.time()
+    prev = bucket.get(ip, (0, now))
+    bucket[ip] = (prev[0] + 1, now)
+
+
 # ---------- Admin 认证 ----------
 #
 # 用 Flask session（有签名 cookie）做无状态认证：
@@ -795,6 +828,30 @@ def require_admin_session():
     if not session.get("admin"):
         return None, (jsonify({"error": "未登录或会话已过期"}), 401)
     return True, None
+
+
+# ---------- 门户访问密码 ----------
+#
+# 与 admin 认证同构（Flask 签名 cookie），但是另一把锁、另一个 session 键：
+#   - 登录：session["portal"] = True
+#   - 校验：session.get("portal") is True
+# 未设 PORTAL_PASSWORD → portal_auth_enabled() 为 False → 门禁整个不生效，
+# 所有请求原样放行（这是旧部署的默认行为，升级不需要动配置）。
+#
+# 豁免前缀：这些路径不经过门禁（否则要么进不去登录页，要么把 admin 锁两道）。
+
+_PORTAL_GATE_EXEMPT = (
+    "/static/",           # 页面自己的 css/js
+    "/api/portal/login",  # 登录入口本身
+    "/api/portal/logout",
+    "/admin",             # admin 页面 + /api/admin/*：自带 ADMIN_PASSWORD 认证
+    "/api/admin/",
+)
+
+
+def portal_auth_enabled() -> bool:
+    """PORTAL_PASSWORD 没设或为空 → 全站免登录（保持旧行为）。"""
+    return bool(PORTAL_PASSWORD)
 
 
 # ---------- HTTPS 证书（运行时动态生成） ----------
@@ -972,6 +1029,55 @@ def ensure_user_cert(user_id: str) -> tuple[str, str, str]:
 
 
 # ---------- 路由 ----------
+
+@app.before_request
+def portal_gate():
+    """全局门禁：未设 PORTAL_PASSWORD 时完全透明，设了则拦下未登录请求。
+
+    做成 before_request 而不是逐路由装饰器 —— 以后新增路由默认受保护，
+    漏保护要显式加进 _PORTAL_GATE_EXEMPT，方向比"忘记加装饰器"安全。
+    """
+    if not portal_auth_enabled():
+        return None
+    path = request.path
+    if path.startswith(_PORTAL_GATE_EXEMPT):
+        return None
+    if session.get("portal"):
+        return None
+    # API 请求回 JSON 401（前端据此回到密码门）；页面请求直接渲染密码门。
+    if path.startswith("/api/"):
+        return jsonify({"error": "未登录或会话已过期"}), 401
+    return render_template("gate.html"), 401
+
+
+@app.route("/api/portal/login", methods=["POST"])
+def api_portal_login():
+    """门户密码登录。未启用密码时没什么可登的，直接 404。"""
+    if not portal_auth_enabled():
+        return jsonify({"error": "portal password disabled"}), 404
+
+    ip = request.remote_addr or "unknown"
+    allowed, remain = login_cooldown_check(_portal_login_failures, ip)
+    if not allowed:
+        return jsonify({"error": f"登录失败次数过多，请 {remain:.0f} 秒后重试"}), 429
+
+    data = request.get_json(silent=True) or {}
+    pw = (data.get("password") or "")
+    if not pw or not secrets.compare_digest(pw, PORTAL_PASSWORD):
+        login_record_failure(_portal_login_failures, ip)
+        return jsonify({"error": "密码错误"}), 401
+
+    _portal_login_failures.pop(ip, None)
+    session["portal"] = True
+    session.permanent = True
+    return jsonify({"ok": True})
+
+
+@app.route("/api/portal/logout", methods=["POST"])
+def api_portal_logout():
+    session.clear()
+    return jsonify({"ok": True})
+
 
 @app.route("/")
 def index():
@@ -1269,30 +1375,23 @@ def api_admin_login():
     if not admin_auth_enabled():
         return jsonify({"error": "admin disabled"}), 404
     ip = request.remote_addr or "unknown"
-    now = time.time()
-    # 冷却检查
-    fails = _admin_login_failures.get(ip)
-    if fails:
-        count, last = fails
-        if count >= _ADMIN_MAX_ATTEMPTS and (now - last) < _ADMIN_LOCKOUT_SEC:
-            return jsonify({
-                "error": f"登录失败次数过多，请 {_ADMIN_LOCKOUT_SEC:.0f} 秒后重试"
-            }), 429
-        if (now - last) >= _ADMIN_LOCKOUT_SEC:
-            _admin_login_failures.pop(ip, None)
+    allowed, remain = login_cooldown_check(_admin_login_failures, ip)
+    if not allowed:
+        return jsonify({"error": f"登录失败次数过多，请 {remain:.0f} 秒后重试"}), 429
 
     data = request.get_json(silent=True) or {}
     pw = (data.get("password") or "")
     if not pw or not secrets.compare_digest(pw, ADMIN_PASSWORD):
-        # 累计失败次数
-        prev = _admin_login_failures.get(ip, (0, now))
-        _admin_login_failures[ip] = (prev[0] + 1, now)
+        login_record_failure(_admin_login_failures, ip)
         return jsonify({"error": "密码错误"}), 401
 
     # 成功：清失败计数 + 写 session（Flask 签名 cookie，跨 worker 无状态）
     _admin_login_failures.pop(ip, None)
     session.clear()
     session["admin"] = True
+    # 管理员天然有门户权限：不补这一条，上面的 session.clear() 会把已登录的
+    # 门户 cookie 一起清掉，登录 admin 后回首页会莫名要求重新输门户密码。
+    session["portal"] = True
     session.permanent = True
     # permanent_session_lifetime 由 app.permanent_session_lifetime 控制（下面初始化时设）
     return jsonify({"ok": True})
