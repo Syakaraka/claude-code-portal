@@ -65,7 +65,7 @@ sudo usermod -aG docker $USER    # 让自己能免 sudo 跑 docker
 
 ### 1.2 Linux 宿主机（Debian/Ubuntu 系）
 
-`vendor/code-server_4.129.0_amd64.deb` 是 amd64 Debian 包，`Dockerfile` 用 `apt-get
+`vendor/code-server_4.131.0_amd64.deb` 是 amd64 Debian 包，`Dockerfile` 用 `apt-get
 install` 装 `git` / `openssl` / `ca-certificates`。这些都假设 **Linux + apt**。
 
 新机器必须是 **Debian/Ubuntu**（或同源发行版如 Linux Mint、Pop!_OS）。
@@ -172,17 +172,17 @@ tar czf user-data.tar.gz volumes/users/
 mkdir -p vendor
 cd vendor
 
-# 1) Claude Code 扩展 (Linux x64, v2.1.217)
-curl -L -o Anthropic.claude-code-2.1.217@linux-x64.vsix \
-  https://openvsx.eclipsecontent.org/Anthropic/claude-code/linux-x64/2.1.217/Anthropic.claude-code-2.1.217@linux-x64.vsix
+# 1) Claude Code 扩展 (Linux x64, v2.1.220)
+curl -L -o Anthropic.claude-code-2.1.220@linux-x64.vsix \
+  https://openvsx.eclipsecontent.org/Anthropic/claude-code/linux-x64/2.1.220/Anthropic.claude-code-2.1.220@linux-x64.vsix
 
-# 2) VS Code 中文语言包 (v1.129.0，跟 code-server 内核版本对齐)
-curl -L -o MS-CEINTL.vscode-language-pack-zh-hans-1.129.0.vsix \
-  https://openvsx.eclipsecontent.org/MS-CEINTL/vscode-language-pack-zh-hans/1.129.0/MS-CEINTL.vscode-language-pack-zh-hans-1.129.0.vsix
+# 2) VS Code 中文语言包 (v1.131.0，跟 code-server 内核版本对齐)
+curl -L -o MS-CEINTL.vscode-language-pack-zh-hans-1.131.0.vsix \
+  https://openvsx.eclipsecontent.org/MS-CEINTL/vscode-language-pack-zh-hans/1.131.0/MS-CEINTL.vscode-language-pack-zh-hans-1.131.0.vsix
 
-# 3) code-server v4.129.0 (amd64 Debian 包)
-curl -L -o code-server_4.129.0_amd64.deb \
-  https://github.com/coder/code-server/releases/download/v4.129.0/code-server_4.129.0_amd64.deb
+# 3) code-server v4.131.0 (amd64 Debian 包)
+curl -L -o code-server_4.131.0_amd64.deb \
+  https://github.com/coder/code-server/releases/download/v4.131.0/code-server_4.131.0_amd64.deb
 
 cd ..
 # 检查文件大小
@@ -193,11 +193,11 @@ ls -lh vendor/
 ```
 
 > **版本对齐是硬要求**：扩展 `engines.vscode` 字段必须 ≥ code-server 内的 VS Code 版本，
-> 否则扩展装上但 UI 不生效；中文包 v1.128.x 配 code-server 4.129.0 会出现中文 UI 时有时无。
+> 否则扩展装上但 UI 不生效；中文包 v1.130.x 配 code-server 4.131.0 会出现中文 UI 时有时无。
 > Claude Code 扩展是 Linux x64 专用 —— Windows / macOS 客户端用 Open VSX 找对应平台的版本。
 
 > **deb 必须用 amd64**：即使 host 是 arm64 也要走 qemu 模拟，没问题（构建期性能不敏感）。
-> ARM64 host 长期跑 Claude Code 容器建议改成 `code-server_4.129.0_arm64.deb`。
+> ARM64 host 长期跑 Claude Code 容器建议改成 `code-server_4.131.0_arm64.deb`。
 
 ### Step 2：在新机器准备环境
 

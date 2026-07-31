@@ -1,7 +1,7 @@
 # Claude Code 多用户部署 - 架构设计
 
 > 状态：**Phase 1 ✅ 完成**，Phase 2 完成，Phase 3 部分完成
-> 最近更新：2026-07-19（白主题门户 + 2 步向导 + /admin 面板 + /api/rebuild；§16/§17）
+> 最近更新：2026-07-31（code-server 4.129.0 → 4.131.0 / claude-code 2.1.217 → 2.1.220 / zh-hans 1.129.0 → 1.131.0；§11）+ 一键禁用 VS Code / Copilot 内置 AI（§23）
 > 后续：2026-07-19 多 worker session 修复（FLASK_SECRET 跨 worker 一致）；2026-07-19 中文语言包 v1.129.0 替换
 
 ---
@@ -68,7 +68,7 @@ http://server/  ─────►  [Claude Portal :80]
       │ claude-<uid>   │ ────────────────┘                          │
       │ :8081 / :8082  │                                            │
       │                │ ◄──────────────────────────────────────────┘
-      │ code-server 4.129.0 (HTTPS)
+      │ code-server 4.131.0 (HTTPS)
       │                │   默认打开 multi-root workspace:
       │ /workspace (RO)│     • /workspace      (RO 共享代码库)
       │ /home/node     │     • /home/node/scratch (per-user RW 临时区)
@@ -154,7 +154,7 @@ Portal 容器挂载宿主机 `/var/run/docker.sock`，获得完整 Docker 控制
 - 同一用户多次启动密码一致，记忆成本为零
 
 ### 决策 9：扩展通过 vendor .vsix 本地装（不用运行时市场）
-详见 §11。code-server v4.129.0 不再支持 config.yaml 切市场，且国内构建环境访问 github.com / MS Marketplace 都不通，本地预下载 .vsix 离线装是唯一稳的路径。
+详见 §11。code-server v4.131.0 不再支持 config.yaml 切市场，且国内构建环境访问 github.com / MS Marketplace 都不通，本地预下载 .vsix 离线装是唯一稳的路径。
 
 ### 决策 10：项目本地 volumes/ 目录（替代系统路径 /home/users、/workspace）
 所有 claude 容器的 bind mount 源都放在项目内 `volumes/`，不再散在系统目录：
@@ -211,9 +211,9 @@ claude_web_images/
 ├── .dockerignore               # 排除 volumes/ portal/ ARCHITECTURE.md
 ├── ARCHITECTURE.md             # ← 本文档
 ├── vendor/                     # ⚠️ 不入库，构建环境预下载的二进制
-│   ├── code-server_4.129.0_amd64.deb
-│   ├── Anthropic.claude-code-2.1.217@linux-x64.vsix
-│   └── MS-CEINTL.vscode-language-pack-zh-hans.vsix
+│   ├── code-server_4.131.0_amd64.deb
+│   ├── Anthropic.claude-code-2.1.220@linux-x64.vsix
+│   └── MS-CEINTL.vscode-language-pack-zh-hans-1.131.0.vsix
 ├── volumes/                    # ⚠️ 不入库（含用户数据 + 知识库）
 │   ├── code/                   # 团队知识库（→ 容器 /workspace, RO）
 │   │   └── demo/
@@ -452,8 +452,8 @@ portal 内部把 `opusModel` 复制到 `ANTHROPIC_MODEL`（兼容老版 Claude C
 - [x] 浏览器记住 code-server password（`PASSWORD_MAP`）
 - [x] 容器启动失败时把日志带回来便于排查
 - [x] **Claude Code 镜像优化**（见 §11）：
-  - [x] 预装 Claude Code VS Code 扩展（2.1.217 linux-x64）
-  - [x] 预装简体中文语言包（1.128.x，兼容 code-server 自带 VS Code 1.129.0）
+  - [x] 预装 Claude Code VS Code 扩展（2.1.220 linux-x64）
+  - [x] 预装简体中文语言包（1.131.0，兼容 code-server 自带 VS Code 1.131.0）
   - [x] UI 默认中文（`locale: zh-cn`，含 argv.json + userDataDir/languagepacks.json 兜底）
   - [x] code-server 默认打开 multi-root `/home/node/workspace.code-workspace`（/workspace + scratch）
 - [x] **4 个 ANTHROPIC 模型 env vars**（§5.3）
@@ -483,7 +483,7 @@ portal 内部把 `opusModel` 复制到 `ANTHROPIC_MODEL`（兼容老版 Claude C
 | phase 1 启动容器阻塞请求（同步） | 后续可改异步 + WebSocket 推送状态 |
 | Portal 单点 | 后续可两实例 + keepalived（内网场景不必要） |
 | vendor 文件需手动维护 | 写脚本定期检查版本更新；CI 可加自动下载 |
-| code-server 扩展市场无法切换 | v4.129.0 已移除 config.yaml 支持，等上游修复或升级 |
+| code-server 扩展市场无法切换 | v4.131.0 已移除 config.yaml 支持，等上游修复或升级 |
 | UI 中文靠 entrypoint 手动写 `<userDataDir>/languagepacks.json` 兜底（路径 + key 都是 vp()/KW() 实际读取的格式） | code-server 4.x exthost 加载 bug 仍可能让 languagePacks service 不写 file；目前 manual override 顶住，等上游修复后可去掉这个兜底 |
 
 ---
@@ -498,7 +498,7 @@ portal 内部把 `opusModel` 复制到 `ANTHROPIC_MODEL`（兼容老版 Claude C
 - ⚠️ `ghproxy.net`：可达但 ~370 KB/s，下 196MB 需 9 分钟
 - ❌ `open-vsx.org`（code-server 默认扩展市场）：hang
 - ❌ `marketplace.visualstudio.com` API：SSL 握手失败
-- ❌ code-server `config.yaml` 的 `extensions-gallery` 字段：v4.129.0 已移除，`Unknown option`
+- ❌ code-server `config.yaml` 的 `extensions-gallery` 字段：v4.131.0 已移除，`Unknown option`
 - ⚠️ `EXTENSIONS_GALLERY` 环境变量：源码里只 log，不实际传给 VS Code
 
 结论：构建时联网装扩展、运行时联网装扩展都不可靠。**离线 vendor 是唯一稳的路径**。
@@ -509,9 +509,9 @@ portal 内部把 `opusModel` 复制到 `ANTHROPIC_MODEL`（兼容老版 Claude C
 
 | 文件 | 来源 | 必需 |
 |------|------|------|
-| `code-server_4.129.0_amd64.deb` | github releases (`ghproxy.net` 镜像拉) | ✅ |
-| `Anthropic.claude-code-2.1.217@linux-x64.vsix` | MS Marketplace（**必须 linux-x64**）| ✅ |
-| `MS-CEINTL.vscode-language-pack-zh-hans.vsix` | MS Marketplace | ✅（要求 `engines.vscode: ^1.128.0`，因 code-server 4.129.0 自带 VS Code 1.129.0）|
+| `code-server_4.131.0_amd64.deb` | github releases (`ghproxy.net` 镜像拉) | ✅ |
+| `Anthropic.claude-code-2.1.220@linux-x64.vsix` | MS Marketplace（**必须 linux-x64**）| ✅ |
+| `MS-CEINTL.vscode-language-pack-zh-hans-1.131.0.vsix` | MS Marketplace | ✅（要求 `engines.vscode: ^1.131.0`，因 code-server 4.131.0 自带 VS Code 1.131.0）|
 
 ### 11.3 vendor 文件下载指引
 
@@ -519,8 +519,8 @@ portal 内部把 `opusModel` 复制到 `ANTHROPIC_MODEL`（兼容老版 Claude C
 
 **code-server deb**（在构建机用 `ghproxy.net`，约 9 分钟）：
 ```bash
-curl -o vendor/code-server_4.129.0_amd64.deb \
-  "https://ghproxy.net/https://github.com/coder/code-server/releases/download/v4.129.0/code-server_4.129.0_amd64.deb"
+curl -o vendor/code-server_4.131.0_amd64.deb \
+  "https://ghproxy.net/https://github.com/coder/code-server/releases/download/v4.131.0/code-server_4.131.0_amd64.deb"
 ```
 
 **Claude Code 扩展**（**必须带 `?targetPlatform=linux-x64`**，否则下到 arm64 或 win 版）：
@@ -528,15 +528,15 @@ curl -o vendor/code-server_4.129.0_amd64.deb \
 https://marketplace.visualstudio.com/_apis/public/gallery/publishers/anthropic/vsextensions/claude-code/latest/vspackage?targetPlatform=linux-x64
 ```
 
-**中文语言包**（**用 1.128.x 系列**，最新 1.129.x 要求 `^1.129.1`，与 code-server 自带 VS Code 1.129.0 不兼容）：
+**中文语言包**（**用 1.131.x 系列**，最新 1.131.0 要求 `^1.131.0`，与 code-server 自带 VS Code 1.131.0 严格匹配）：
 ```
-https://marketplace.visualstudio.com/_apis/public/gallery/publishers/MS-CEINTL/vsextensions/vscode-language-pack-zh-hans/1.128.2026070703/vspackage
+https://openvsx.eclipsecontent.org/MS-CEINTL/vscode-language-pack-zh-hans/1.131.0/MS-CEINTL.vscode-language-pack-zh-hans-1.131.0.vsix
 ```
 
 **验证语言包版本兼容**：
 ```bash
-unzip -p vendor/MS-CEINTL.vscode-language-pack-zh-hans.vsix extension/package.json | python3 -m json.tool | grep engines
-# 应该看到 "vscode": "^1.128.0" 之类（不含 1.129.1）
+unzip -p vendor/MS-CEINTL.vscode-language-pack-zh-hans-1.131.0.vsix extension/package.json | python3 -m json.tool | grep engines
+# 应该看到 "vscode": "^1.131.0"
 ```
 
 ### 11.4 构建时怎么用
@@ -544,7 +544,7 @@ unzip -p vendor/MS-CEINTL.vscode-language-pack-zh-hans.vsix extension/package.js
 Dockerfile 关键段：
 ```dockerfile
 # 1. 装 code-server（从 vendor deb，dpkg -i）
-ARG CODE_SERVER_VERSION=4.129.0
+ARG CODE_SERVER_VERSION=4.131.0
 COPY vendor/code-server_${CODE_SERVER_VERSION}_amd64.deb /tmp/code-server.deb
 RUN dpkg -i /tmp/code-server.deb && rm /tmp/code-server.deb && code-server --version
 
@@ -587,13 +587,13 @@ docker run --rm -u 0 --entrypoint /usr/local/bin/entrypoint.sh claude-code:local
 应该看到（典型输出，env 没 CERT_FILE 所以是 HTTP）：
 ```
 [entrypoint] installing local VS Code extensions:
-  - MS-CEINTL.vscode-language-pack-zh-hans.vsix
-  - Anthropic.claude-code-2.1.217@linux-x64.vsix
+  - MS-CEINTL.vscode-language-pack-zh-hans-1.131.0.vsix
+  - Anthropic.claude-code-2.1.220@linux-x64.vsix
 [entrypoint] chmod +x: claude
 [entrypoint] chmod +x: audio-capture.node
 [entrypoint] wrote User/settings.json (workspace trust disabled, publishers pre-trusted)
 [entrypoint] wrote User/argv.json (locale=zh-cn)
-[entrypoint] wrote /home/node/.local/share/code-server/languagepacks.json (zh-cn manual override, ext=..., id=ms-ceintl.vscode-language-pack-zh-hans, ver=1.129.0)
+[entrypoint] wrote /home/node/.local/share/code-server/languagepacks.json (zh-cn manual override, ext=..., id=ms-ceintl.vscode-language-pack-zh-hans, ver=1.131.0)
 [entrypoint] wrote workspace.code-workspace (multi-root: Workspace + Scratch)
 [entrypoint] WARN: cert not found at $CERT_FILE / $KEY_FILE, starting without HTTPS
 [entrypoint] starting code-server: code-server --bind-addr 0.0.0.0:8089 --auth password /home/node/workspace.code-workspace
@@ -1246,3 +1246,4 @@ CLAUDE_WORKSPACE_FILE_NAME      ${WORKSPACE_FILE_NAME}
 | 2026-07-21 | **vendor 升级到 anthropic.claude-code@2.1.216**：跟市场推送同步；跟 2.1.215 相比改了 6 个文件（`extension.js` + `claude-code-settings.schema.json` + `package.json` 内容文本重排 + `resources/native-binary/claude` 二进制 + `webview/index.{js,css}`），功能上是普通 bug fix + UI 调整 + schema 更新，**未引入 `dist/browser/extension.js` web bundle**（web mode 激活限制保持不变）；同时清理 vendor：删掉旧 `anthropic.claude-code.vsix`(2.1.214) + `*.vsix.bak` 备份——避免 COPY 时多版同 ID 冲突。镜像 hash `ad0cc62a`（其他层全 cache 命中，仅 COPY .vsix 层重做） |
 | 2026-07-20 | **精简 claude-code 镜像**：移除 `unified_db_mcp.ts`（MySQL+Oracle 只读 SQL MCP）+ `mysql2`/`oracledb`/`@modelcontextprotocol/sdk`/`zod`/`mcp-remote`/`tsx` npm 包 + Dockerfile 里的 `libaio1` apt 依赖 + portal/app.py 里的 Oracle Instant Client bind / `LD_LIBRARY_PATH` env；对应 .env.example / .env / docker-compose.yml / DEPLOY.md / 附录 B 全部同步清理。镜像从 793MB → 782MB（压缩）；运行时不再 bind `/opt/oracle/instantclient` ~200MB 内存/容器也省下。保留 claude-code npm vsix @ 2.1.215 + code-server 4.129.0 + Node 22.23.1 LTS（Jod）—— 都是当前最新。`git log` 这次大改：源码/配置/文档全部统一推进；存量用户 home 目录里的旧 mcp 残留不影响新容器启动（每容器重建后都用新 entrypoint）|
 | 2026-07-31 | **门户访问密码 `PORTAL_PASSWORD`（§21）**：新增全局 `@app.before_request` 门禁 —— 未设该 env 时完全透明（旧部署零改动），设了则未登录访问 `/` 得到独立密码门页 `templates/gate.html`（401），未登录访问 `/api/*` 得到 401 JSON；豁免 `/static/`、`/api/portal/login|logout`、`/admin` + `/api/admin/*`（后者自带 ADMIN_PASSWORD 认证，不串两道密码）。session 键 `session["portal"]` 与 admin 分开，防爆破逻辑抽成 `login_cooldown_check()` / `login_record_failure()` 由两边共用但各用一个 IP 计数桶；`api_admin_login` 成功时顺带写 `session["portal"] = True`，避免其中的 `session.clear()` 把门户登录态一起清掉。前端 `app.js` 三处 fetch 加 `handleGate401()` → 401 时 reload 回密码门 |
+| 2026-07-31 | **镜像三件套升级 + AI 一键禁用**：vendor 三件全部对齐 —— `Anthropic.claude-code-2.1.220@linux-x64.vsix` + `MS-CEINTL.vscode-language-pack-zh-hans-1.131.0.vsix` + `code-server_4.131.0_amd64.deb`（4.129.0 → 4.131.0，2.1.217 → 2.1.220，1.129.0 → 1.131.0；中文包 `engines.vscode ^1.131.0` 跟 code-server 自带 VS Code 1.131.0 严格匹配）。Dockerfile `ARG CODE_SERVER_VERSION` / DEPLOY.md / ARCHITECTURE.md 同步推进。**AI 一键禁用**：三层落点 —— entrypoint.sh 写 User/settings.json 时加 4 条 key；模板 `volumes/node/.local/share/code-server/User/settings.json` 写入相同 4 条（新建用户首次 start 自动落位）；portal `ensure_user_dir` + `sync_template_to_user` 末尾调 `_enforce_ai_disabled_settings(user_dir)` 合并写入（老用户 / 手动删 settings.json 也能兜住）。4 条 key：`chat.disableAIFeatures: true`（VS Code 内置 chat）+ `github.copilot.enable: {"*": false}`（Copilot 总开关）+ `github.copilot.chat.enabled: false`（Copilot Chat 子模块再挡一道）+ `inlineSuggest.enabled: false`（所有内联补全 ghost text）。用户后续要放开某条，只改 `_AI_DISABLED_SETTINGS` 字典即可 |
