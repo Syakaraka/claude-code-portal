@@ -229,5 +229,11 @@ else
 fi
 
 echo "[entrypoint] starting code-server: code-server $* $cert_args"
+# 硬编码 --disable-telemetry --disable-update-check：
+#   - telemetry：code-server 默认会上报 usage/版本到 coder 总部
+#   - update-check：code-server 默认每 6 小时 check 一次 GitHub release 并弹通知
+# 两个 flag 都放在 "$@" / $cert_args 后面（CLI parser 后出现者覆盖前者），
+# 保证即使 CMD / portal env 传 --disable-telemetry=false 也不会重新打开
+# （内网环境不该有任何外发；想解禁只能改 entrypoint.sh 重建镜像）
 # shellcheck disable=SC2086
-exec code-server "$@" $cert_args
+exec code-server "$@" $cert_args --disable-telemetry --disable-update-check
