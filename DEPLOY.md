@@ -97,6 +97,24 @@ docker compose version    # 验证 Compose v2
 **新机器一定要在 .env 里改成自己的路径**，否则 docker.run() 的 bind source
 会找不到。
 
+### 1.5 凭据页默认值（Step 1 预填）
+
+`.env` 里的 `DEFAULT_BASE_URL` / `DEFAULT_OPUS_MODEL` / `DEFAULT_SONNET_MODEL` /
+`DEFAULT_HAIKU_MODEL` 4 个变量控制首页凭据表单的预填值（`index()` 渲染时
+传给 login.html 的 `{{ default_* }}`）。改 `.env` 重启 portal 生效，**不需要**
+rebuild 镜像：
+
+```bash
+DEFAULT_BASE_URL=https://your-internal-llm-gateway.example.com
+DEFAULT_OPUS_MODEL=claude-opus-4
+DEFAULT_SONNET_MODEL=claude-sonnet-4
+DEFAULT_HAIKU_MODEL=claude-haiku-4
+```
+
+留空 = input 是空，让用户自己填；填了 = input 预填该值，用户可在浏览器里直接改。
+Base URL 默认留空（敏感信息不该有团队级默认），三个 model 默认 `claude-*-4`
+（最常见值；想换内部模型名就在 .env 改）。
+
 ### 1.6 内部 CA 证书（迁移决策点）
 
 Portal 每次启动如果 `volumes/certs/` 没有 CA 就生成一个全新的。
@@ -386,6 +404,8 @@ docker compose down -v
 | 重启 portal 后 admin session 立即过期 | `FLASK_SECRET` 没设；设上 `FLASK_SECRET=$(python3 -c 'import secrets;print(secrets.token_urlsafe(48))')` |
 | claude 容器里 node 用户写不进文件 | 宿主机用户 uid 不是 1000；见 §1.1 |
 | `permission denied` on `/var/run/docker.sock` | 当前用户不在 `docker` group；`sudo usermod -aG docker $USER` 然后重登 |
+| admin 重建/删除面板勾上选项 5 秒后自动取消 | `renderRows()` 每 5s 重写 `innerHTML` 会清掉 checkbox 状态；新版本 portal 已修（保留展开面板里所有 checkbox 的 checked，重渲后按 uid + data-opt 恢复）。**如果是这个症状**：portal 镜像重建并重启（`docker compose build portal && docker compose up -d --force-recreate portal`） |
+| Claude Code 每次启动弹"自定义 API key 风险确认"窗 | `~/.claude.json` 的 `customApiKeyResponses.approved` 没命中——portal `_enforce_custom_api_key_responses()` 写的是 apiKey 末 20 位（对齐 Claude Code 的 `vZ = e.trim().slice(-20)`）。如果还是弹，进容器 `cat ~/.claude.json` 检查 approved 数组里**没有 20 字符的尾段**，多半是镜像重建后老 user_dir 没被 portal 写回——走 `/admin` 给该用户点"重建 ▼ → 确认重建"触发 start_container 重写 |
 
 ---
 
@@ -400,6 +420,7 @@ docker compose down -v
 - [ ] 项目解压到 `HOST_PROJECT_DIR` 指向的位置
 - [ ] `vendor/` 已带过来（`.vsix` + `.deb`）
 - [ ] `.env` 已 cp 自 `.env.example` 并改了 `HOST_PROJECT_DIR` + `ADMIN_PASSWORD`
+- [ ] 可选：`.env` 配了 `DEFAULT_BASE_URL` / `DEFAULT_OPUS_MODEL` / `DEFAULT_SONNET_MODEL` / `DEFAULT_HAIKU_MODEL`（凭据页预填；见 §1.5）
 - [ ] 可选：`volumes/certs/` 已沿用旧 CA（保留用户浏览器信任）
 - [ ] 可选：`volumes/users/` 已沿用旧用户数据
 - [ ] `sudo chown -R 1000:1000 $HOST_PROJECT_DIR` 跑过
