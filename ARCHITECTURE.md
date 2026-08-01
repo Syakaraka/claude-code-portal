@@ -10,7 +10,7 @@
 ## 1. 背景与目标
 
 ### 现状
-- 单个 `claude-code:local` 容器部署在服务器
+- 单个 `claude-code-web:local` 容器部署在服务器
 - 用户 SSH 进服务器启动容器使用
 - 文件交互困难：本地文件无法被容器访问，临时文件传输繁琐
 - 单用户场景设计
@@ -275,7 +275,7 @@ WORKSPACE_PATH        = os.path.join(CONTAINER_VOLUMES, "code")
 USER_TEMPLATE         = os.path.join(CONTAINER_VOLUMES, "node")
 HOST_USER_DATA_BASE   = HOST_USERS_DIR               # host 视角
 HOST_WORKSPACE_PATH   = HOST_CODE_DIR
-CLAUDE_IMAGE_NAME     = _env("CLAUDE_IMAGE_NAME",     "claude-code:local")
+CLAUDE_IMAGE_NAME     = _env("CLAUDE_IMAGE_NAME",     "claude-code-web:local")
 PORTAL_LABEL          = _env("PORTAL_LABEL",          "managed-by")
 CLAUDE_PORT_MIN       = _env_int("CLAUDE_PORT_MIN",   9901)
 CLAUDE_PORT_MAX       = _env_int("CLAUDE_PORT_MAX",   9999)
@@ -580,7 +580,7 @@ CMD ["--bind-addr", "0.0.0.0:8080", "--auth", "password", "--locale", "zh-cn", "
 
 构建完后手动测一次：
 ```bash
-docker run --rm -u 0 --entrypoint /usr/local/bin/entrypoint.sh claude-code:local \
+docker run --rm -u 0 --entrypoint /usr/local/bin/entrypoint.sh claude-code-web:local \
     --bind-addr 0.0.0.0:8089 --auth password \
     /home/node/workspace.code-workspace 2>&1 | head -20
 ```
@@ -831,7 +831,7 @@ os.chmod(scratch_dir, 0o777)
 
 | Var | 默认 | 说明 |
 |-----|------|------|
-| `CLAUDE_IMAGE_NAME` | `claude-code:local` | portal `docker.run` 拉的镜像 tag |
+| `CLAUDE_IMAGE_NAME` | `claude-code-web:local` | portal `docker.run` 拉的镜像 tag |
 | `PORTAL_LABEL` | `managed-by` | Docker 容器 label key（管理 / 过滤用） |
 
 #### F. 文件 / 子目录名（极端定制，一般不动）
@@ -861,7 +861,7 @@ os.chmod(scratch_dir, 0o777)
 |------|------|
 | 端口（`PORTAL_*`, `CLAUDE_PORT_*`） | 改 `.env` → `docker compose up -d` |
 | Host 路径 | 改 `.env` → `docker compose up -d` |
-| 容器内 bind target（`CLAUDE_*_BIND` 等） | 改 `.env` → `docker build . -t claude-code:local` → `docker compose up -d` |
+| 容器内 bind target（`CLAUDE_*_BIND` 等） | 改 `.env` → `docker build . -t claude-code-web:local` → `docker compose up -d` |
 | `PORTAL_CONTAINER_PORT` | 改 `.env` → `docker compose build portal` → `docker compose up -d` |
 
 ### 15.5 默认值变更历史
@@ -1233,7 +1233,7 @@ CLAUDE_WORKSPACE_FILE_NAME      ${WORKSPACE_FILE_NAME}
 | 2026-07-19 | **端口 + 路径全可配置**（§15）：portal 9900 / claude 9901-9999 默认值；HOST_* / CLAUDE_*_BIND / CLAUDE_*_FILENAME 全 env-driven；改 bind 路径要 rebuild claude-code 镜像，其他纯 runtime |
 | 2026-07-19 | **白主题门户 + 2 步向导 + 管理员面板**（§16 / §17）：portal/login.html 改为白色 workshop-ticket 美学 + 步骤导轨（01/02），step1 输入凭据 → step2 容器 URL + 密码 + 打开；用户改任意字段可"回到上一步"→ 自动检测改动 → 走 /api/rebuild 重建容器（带 reset_home / reset_scratch 选项）；独立 /admin 页面 + ADMIN_PASSWORD 鉴权 → 列出所有用户容器，可停止 / 删除（可选清数据）|
 | 2026-07-19 | **admin 鉴权机制修正**：原方案用 in-memory `_admin_tokens: set` → gunicorn 多 worker 下 token 不共享；改为 Flask 签名 cookie session（无状态），同时强制 `FLASK_SECRET` 跨 worker 一致（`HOST_PROJECT_DIR` 派生兜底）—— 根除了"登录后 5 秒自动过期"症状 |
-| 2026-07-19 | **中文语言包版本对齐**：vendor/MS-CEINTL.vscode-language-pack-zh-hans.vsix 从 v1.128.x 升到 v1.129.0（`engines: ^1.129.0`），与 code-server v4.129.0 内核的 VS Code 1.129.0 严格匹配 —— 此前版本错配可能是中文 UI 时有时无的根因之一；用户需 `docker build . -t claude-code:local` + 重建用户容器（保留 home dir 让 entrypoint 重写 argv.json） |
+| 2026-07-19 | **中文语言包版本对齐**：vendor/MS-CEINTL.vscode-language-pack-zh-hans.vsix 从 v1.128.x 升到 v1.129.0（`engines: ^1.129.0`），与 code-server v4.129.0 内核的 VS Code 1.129.0 严格匹配 —— 此前版本错配可能是中文 UI 时有时无的根因之一；用户需 `docker build . -t claude-code-web:local` + 重建用户容器（保留 home dir 让 entrypoint 重写 argv.json） |
 | 2026-07-19 | **CA 安装步骤重写**：portal CA banner 步骤按 Windows 实际证书导入向导流程重写（Open File 安全警告 → 用户/本地 store 选择 → "Trusted Root Certification Authorities" → Finish → **Security Warning 必点 Yes** → 完全退出 Chrome），加了 Edge / Firefox / iOS Safari 兼容性说明（Firefox 单独 trust store 不跟系统，iOS Safari 没法用）|
 | 2026-07-19 | **端口 + 路径全可配置（§15）**：新增 .env，所有端口/路径/文件名 env-driven；默认 portal 9900 / claude 9901-9999（旧 80/8081 写为 fallback）；portal/app.py / docker-compose.yml / portal/Dockerfile / entrypoint.sh / .env.example 全部改完，验证 claude 容器启动后 `ports={"9901/tcp": ...}` 和内部 8080 正确 |
 | 2026-07-19 | **displayName 辅助标识（§18）**：用户可填一个名字（"张伟（产品组）"），纯辅助不参与 hash/隔离/路径；存 `volumes/users/<uid>/.portal_meta.json`；新接口 `/api/profile` PATCH（不动容器）；`/api/start` / `/api/rebuild` 接受 displayName 参数；admin 表格新增 NAME 列。后端 sanitize（白名单字符 + 40 字截断 + 去 control char），HTML escape 渲染防 XSS |

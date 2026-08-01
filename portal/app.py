@@ -68,7 +68,7 @@ CLAUDE_PORT_MIN = _env_int("CLAUDE_PORT_MIN", 9901)
 CLAUDE_PORT_MAX = _env_int("CLAUDE_PORT_MAX", 9999)
 
 # === Claude 镜像 ===
-CLAUDE_IMAGE_NAME = _env("CLAUDE_IMAGE_NAME", "claude-code:local")
+CLAUDE_IMAGE_NAME = _env("CLAUDE_IMAGE_NAME", "claude-code-web:local")
 
 # === Portal / claude 容器标签 ===
 PORTAL_LABEL = _env("PORTAL_LABEL", "managed-by")

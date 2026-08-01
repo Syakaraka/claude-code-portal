@@ -3,11 +3,11 @@ name: claude-code
 # =============================================================
 # Phase 1 多用户架构
 # =============================================================
-# 本 compose 文件只跑 portal。claude-code:local 镜像由 portal 动态拉起。
+# 本 compose 文件只跑 portal。claude-code-web:local 镜像由 portal 动态拉起。
 #
 # 启动顺序（首次）：
 #   1. 复制 .env.example 为 .env，按需修改（端口 / 路径）
-#   2. docker build . -t claude-code:local        # 构建 claude-code 镜像
+#   2. docker build . -t claude-code-web:local        # 构建 claude-code-web 镜像
 #   3. docker compose build                       # 构建 portal 镜像
 #   4. docker compose up -d                       # 启动 portal
 #

@@ -21,7 +21,7 @@
 ### 1.1 宿主用户 uid（root / 普通用户都行）
 
 `portal/app.py` 把所有用户目录 chown 到**数值** uid/gid `1000:1000`
-（对应 `claude-code:local` 镜像里 `/etc/passwd` 的 `node` 用户）。
+（对应 `claude-code-web:local` 镜像里 `/etc/passwd` 的 `node` 用户）。
 Linux inode 上的 uid/gid 是数字，**不依赖用户名**：
 
 - 容器内 `node` (uid 1000) 看到的 inode uid/gid 也是 1000/1000 → 读写正常
@@ -306,8 +306,8 @@ FLASK_SECRET=$(python3 -c "import secrets; print(secrets.token_urlsafe(48))")
 ```bash
 cd /home/deployer/claude-portal
 
-# 5.1 先构建 claude-code:local（包含 code-server + 扩展）
-docker build . -t claude-code:local
+# 5.1 先构建 claude-code-web:local（包含 code-server + 扩展）
+docker build . -t claude-code-web:local
 #   ↑ 首次构建约 3–5 分钟（拉 node:22 基础镜像 + apt install + npm install）
 #   ↑ 必须在项目根（不是 portal 子目录），Dockerfile 在根目录
 
@@ -424,7 +424,7 @@ docker compose down -v
 - [ ] 可选：`volumes/certs/` 已沿用旧 CA（保留用户浏览器信任）
 - [ ] 可选：`volumes/users/` 已沿用旧用户数据
 - [ ] `sudo chown -R 1000:1000 $HOST_PROJECT_DIR` 跑过
-- [ ] `docker build . -t claude-code:local` 成功
+- [ ] `docker build . -t claude-code-web:local` 成功
 - [ ] `docker compose build` 成功
 - [ ] `docker compose up -d` 成功，portal log 无 error
 - [ ] 浏览器访问 `http://新机器IP:9900/` 能看到门户
