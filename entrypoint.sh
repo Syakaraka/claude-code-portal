@@ -72,9 +72,39 @@ fi
 #   - inlineSuggest.enabled: 关掉所有内联补全 ghost text（任何 LSP 都能往里塞补全，
 #     Copilot 也走这条通道；想留自定义 LSP 补全就把这条删掉）
 # 已存在则不动（保留用户手动改过的设置）
-cs_user_dir="$HOME/.local/share/code-server/User"
+cs_data_dir="$HOME/.local/share/code-server"
+cs_user_dir="$cs_data_dir/User"
 cs_settings="$cs_user_dir/settings.json"
 mkdir -p "$cs_user_dir"
+
+# ====== 版本门控的生成配置（argv.json / languagepacks.json）======
+# 这两个文件由 code-server 启动时读取，**格式跟 code-server 版本强绑定**：
+# 老 entrypoint.sh 写的 languagepacks.json 在 code-server 4.131.0+ 上不再被
+# 接受（getInstalledLanguages 抛 TypeError: ...extensions[0]...）。
+# 所以不能再用"文件不存在才写"，而是检测 code-server 版本：
+#   - 文件不存在 OR 标记文件不存在 OR 标记版本 != 当前版本 → 重写
+#   - 一致 → 跳过（保留用户手改，如改成 zh-tw）
+# settings.json 不走这个机制 —— 它是用户偏好 + 系统强制 setting 的混合，
+# 由 portal 的 _enforce_required_cs_settings 走 merge 语义管。
+cs_version="$(code-server --version 2>/dev/null | head -1 | tr -d '\r' || true)"
+[ -z "$cs_version" ] && cs_version="unknown"
+cs_version_marker="$cs_data_dir/.code-server-version"
+
+# should_regenerate FILE: 文件需要重写时返回 0（true）
+should_regenerate() {
+    if [ ! -f "$1" ]; then
+        return 0  # 文件缺失
+    fi
+    if [ ! -f "$cs_version_marker" ]; then
+        return 0  # 从未标记过（首次启动 or 老用户升级前）
+    fi
+    local marked
+    marked=$(cat "$cs_version_marker" 2>/dev/null | tr -d '\r' || echo "")
+    if [ "$marked" != "$cs_version" ]; then
+        return 0  # code-server 升级了
+    fi
+    return 1  # 已最新
+}
 if [ ! -f "$cs_settings" ]; then
     cat > "$cs_settings" <<'EOF'
 {
@@ -99,14 +129,16 @@ fi
 # cookie > accept-language 这个顺序决定 locale 的（server-main.js _handleRoot）。
 # CLI 第一个优先级没生效，但 argv.json 是 file-based，code-server 自己读 —— 写好就行。
 # argvResource = appSettingsHome + "argv.json" = userDataDir + "User/argv.json"。
-# 已存在则不动（用户可能手动改过语言）
+# 版本门控重写：见上面 should_regenerate 的语义（用户手改 zh-tw 在版本不变时会被保留）
 cs_argv="$cs_user_dir/argv.json"
-if [ ! -f "$cs_argv" ]; then
+argv_ok=false
+if should_regenerate "$cs_argv"; then
     cat > "$cs_argv" <<'EOF'
 {
     "locale": "zh-cn"
 }
 EOF
+    argv_ok=true
     echo "[entrypoint] wrote User/argv.json (locale=zh-cn)"
 fi
 
@@ -128,10 +160,10 @@ fi
 #   - label: localizedLanguageName ?? languageName（createQuickPickItem 用）
 # 缺 extensions 或 label 时 code-server 4.131.0 在 scanExtensions 阶段抛错，
 # 不只是语言包加载失败，会让整个扩展列表都解析不出来。
-# 已存在则不动（用户可能手动改过语言）
-cs_data_dir="$HOME/.local/share/code-server"
+# 版本门控重写：见上面 should_regenerate 的语义（升级 code-server 时强制按新格式重写）
 cs_langpacks="$cs_data_dir/languagepacks.json"
-if [ ! -f "$cs_langpacks" ]; then
+langpacks_ok=false
+if should_regenerate "$cs_langpacks"; then
     zh_ext=$(ls -d "$cs_data_dir/extensions"/ms-ceintl.vscode-language-pack-zh-hans-* 2>/dev/null | head -1)
     if [ -n "$zh_ext" ] && [ -f "$zh_ext/translations/main.i18n.json" ] && [ -f "$zh_ext/package.json" ]; then
         # 从 package.json 动态读 version + contributes.localizations[0] 的 label
@@ -159,10 +191,18 @@ if [ ! -f "$cs_langpacks" ]; then
     }
 }
 EOF
+        langpacks_ok=true
         echo "[entrypoint] wrote $cs_langpacks (zh-cn manual override, ext=$zh_ext, id=$zh_ext_id, ver=$zh_version)"
     else
         echo "[entrypoint] WARN: zh-hans language pack not found at \$cs_data_dir/extensions/ms-ceintl.*"
+        # langpacks_ok 保持 false，标记也不更新，下次启动重试
     fi
+fi
+
+# 版本门控 marker 更新：至少一个生成配置重写成功才写标记。
+# 扩展缺失导致 langpacks_ok=false 时不更新，下次启动再试（不静默吞错）
+if [ "$argv_ok" = "true" ] || [ "$langpacks_ok" = "true" ]; then
+    echo "$cs_version" > "$cs_version_marker"
 fi
 
 # 容器内路径都从环境变量读（portal 通过 docker.run env 注入），默认值匹配当前镜像
