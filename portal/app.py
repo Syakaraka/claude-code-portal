@@ -458,7 +458,11 @@ def _enforce_ai_disabled_settings(user_dir: str) -> None:
 # 实现：跟 _enforce_ai_disabled_settings 对称——存在则合并并去重，不存在则建空对象，
 # 写临时文件 + os.replace 原子替换，失败仅 WARN 不阻断。
 _CLAUDE_JSON_RELPATH = ".claude.json"
-_APPROVED_TAIL_LEN = 16  # 写到 approved 数组的 apiKey 尾段长度
+# Claude Code 启动时对 ANTHROPIC_API_KEY 做 trim().slice(-20)，把得到 20 字符的尾段
+# 拿去 customApiKeyResponses.approved.includes() 检查；命中就跳过"自定义 API key
+# 风险确认"弹窗（来源：claude-code-linux-x64 binary 解出的 vZ() 函数）。
+# 写 20 位才能精确匹配；写少了命中不了，写多了 includes() 永远 false。
+_APPROVED_TAIL_LEN = 20
 
 
 def _enforce_custom_api_key_responses(user_dir: str, api_key: str) -> None:
@@ -475,7 +479,11 @@ def _enforce_custom_api_key_responses(user_dir: str, api_key: str) -> None:
     if not api_key:
         return
     claude_json = os.path.join(user_dir, _CLAUDE_JSON_RELPATH)
-    tail = api_key[-_APPROVED_TAIL_LEN:] if len(api_key) >= _APPROVED_TAIL_LEN else api_key
+    # 跟 Claude Code 的 vZ() 对齐：先 strip()（去掉首尾空白）再 slice(-20)。
+    # 不 strip 直接切尾段，vZ 算出来是 21 字符包含 20 字符的子串，但 includes 是严格匹配
+    # 会失败 → 用户还是会被弹窗。
+    trimmed = api_key.strip()
+    tail = trimmed[-_APPROVED_TAIL_LEN:] if len(trimmed) >= _APPROVED_TAIL_LEN else trimmed
     try:
         existing = {}
         if os.path.exists(claude_json):
@@ -791,7 +799,7 @@ def start_container(user_id: str, base_url: str, api_key: str,
     if not client:
         raise RuntimeError("docker unavailable")
     user_dir = ensure_user_dir(user_id)
-    # 把 apiKey 尾段加进 ~/.claude.json 的 customApiKeyResponses.approved，
+    # 把 apiKey 末 20 位加进 ~/.claude.json 的 customApiKeyResponses.approved，
     # 让 Claude Code 启动时不再弹"自定义 API key 风险确认"窗
     _enforce_custom_api_key_responses(user_dir, api_key)
     host_user_dir = host_user_dir_for(user_id)  # docker.run() bind source 用 host 视角
