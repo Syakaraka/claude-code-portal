@@ -654,7 +654,7 @@ body {
                         <span>Base URL</span>
                         <span class="field-hint">LLM 网关完整地址</span>
                     </div>
-                    <input name="baseUrl" required placeholder="https://your-llm-gateway.example.com">
+                    <input name="baseUrl" required placeholder="https://your-llm-gateway.example.com" value="{{ default_base_url }}">
                 </div>
                 <div class="field">
                     <div class="field-label">
@@ -673,11 +673,11 @@ body {
                 <div class="field-row">
                     <div class="field">
                         <div class="field-label"><span>Opus Model</span></div>
-                        <input name="opusModel" required placeholder="claude-opus-4" value="claude-opus-4">
+                        <input name="opusModel" required placeholder="claude-opus-4" value="{{ default_opus_model }}">
                     </div>
                     <div class="field">
                         <div class="field-label"><span>Sonnet Model</span></div>
-                        <input name="sonnetModel" required placeholder="claude-sonnet-4" value="claude-sonnet-4">
+                        <input name="sonnetModel" required placeholder="claude-sonnet-4" value="{{ default_sonnet_model }}">
                     </div>
                 </div>
                 <div class="field">
@@ -685,7 +685,7 @@ body {
                         <span>Haiku Model</span>
                         <span class="field-hint">也作 ANTHROPIC_MODEL 默认</span>
                     </div>
-                    <input name="haikuModel" required placeholder="claude-haiku-4" value="claude-haiku-4">
+                    <input name="haikuModel" required placeholder="claude-haiku-4" value="{{ default_haiku_model }}">
                 </div>
 
                 <div class="actions">
@@ -704,9 +704,7 @@ body {
             <div class="card-title">第 2 步 / 共 2 步</div>
             <h1 class="card-h1">容器已就绪</h1>
             <p class="card-sub">
-                新标签页打开 Code Server，粘贴下面密码登录。密码与 user_id 一致，都是
-                <code style="font-family:var(--mono);font-size:11px;background:var(--paper);padding:1px 4px">sha256(apiKey)[:16]</code>
-                的前 16 位 —— 重新输入同一个 apiKey 会得到同样的密码。
+                新标签页打开 Code Server，粘贴下面密码登录。
             </p>
 
             <div class="result-url">
@@ -722,7 +720,6 @@ body {
             <div class="result-pwd">
                 <div class="result-label">
                     <span>PASSWORD</span>
-                    <span class="field-hint">等于 user_id</span>
                 </div>
                 <div class="result-value-row">
                     <div class="result-value" id="result-password">—</div>

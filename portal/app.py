@@ -166,6 +166,13 @@ ADMIN_PASSWORD = _env("ADMIN_PASSWORD", "")
 # 注意：/admin 与 /api/admin/* 不受它管（自带 ADMIN_PASSWORD 认证，见下）
 PORTAL_PASSWORD = _env("PORTAL_PASSWORD", "")
 
+# === 凭据页默认值（Step 1 input 预填，留空 = 页面 input 空着） ===
+# 改 .env 重启 portal 生效，不需 rebuild 镜像
+DEFAULT_BASE_URL     = _env("DEFAULT_BASE_URL",     "")
+DEFAULT_OPUS_MODEL   = _env("DEFAULT_OPUS_MODEL",   "")
+DEFAULT_SONNET_MODEL = _env("DEFAULT_SONNET_MODEL", "")
+DEFAULT_HAIKU_MODEL  = _env("DEFAULT_HAIKU_MODEL",  "")
+
 # 登录失败计数（按客户端 IP，60 秒冷却）—— 简单防爆破
 # 注意：gunicorn 多 worker 下每个 worker 各自一份计数器，不是全局严格限流；
 # 5 次 / worker 足够拖慢手动尝试，但不是真分布式防爆破（这是内部工具可接受）
@@ -445,6 +452,77 @@ def _enforce_ai_disabled_settings(user_dir: str) -> None:
         app.logger.warning(f"_enforce_ai_disabled_settings: {user_dir} failed: {e}")
 
 
+# customApiKeyResponses.approved 写入到 ~/.claude.json —— Claude Code 启动时如果
+# 检测到当前 ANTHROPIC_API_KEY 已被 approved 过，就跳过"自定义 API key 风险确认"弹窗。
+# approved 的 entry 是 apiKey 的尾段（去掉前缀以避免完整 key 落盘 ~/.claude.json）。
+# 实现：跟 _enforce_ai_disabled_settings 对称——存在则合并并去重，不存在则建空对象，
+# 写临时文件 + os.replace 原子替换，失败仅 WARN 不阻断。
+_CLAUDE_JSON_RELPATH = ".claude.json"
+_APPROVED_TAIL_LEN = 16  # 写到 approved 数组的 apiKey 尾段长度
+
+
+def _enforce_custom_api_key_responses(user_dir: str, api_key: str) -> None:
+    """把 api_key 尾段加进 ~/.claude.json 的 customApiKeyResponses.approved。
+
+    行为：
+      - .claude.json 不存在 → 创建只含 customApiKeyResponses 的最小结构
+      - 存在但解析失败 → WARN 后不动（避免误清用户数据）
+      - 存在且合法 → 在 customApiKeyResponses.approved 数组里加 api_key 尾段（去重），
+        保留其他 key 全部不动
+      - customApiKeyResponses.approved 不存在则建空数组再加
+      - rejected 数组保留为 []（清空会让用户重新弹确认窗，不要清）
+    """
+    if not api_key:
+        return
+    claude_json = os.path.join(user_dir, _CLAUDE_JSON_RELPATH)
+    tail = api_key[-_APPROVED_TAIL_LEN:] if len(api_key) >= _APPROVED_TAIL_LEN else api_key
+    try:
+        existing = {}
+        if os.path.exists(claude_json):
+            try:
+                with open(claude_json, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+                if not isinstance(existing, dict):
+                    app.logger.warning(
+                        f"_enforce_custom_api_key_responses: {claude_json} root is "
+                        f"{type(existing).__name__}, not object; skipping"
+                    )
+                    return
+            except json.JSONDecodeError as e:
+                app.logger.warning(
+                    f"_enforce_custom_api_key_responses: {claude_json} JSON parse "
+                    f"failed ({e}); leaving untouched"
+                )
+                return
+        else:
+            os.makedirs(os.path.dirname(claude_json) or user_dir, exist_ok=True)
+        # 合并 approved：保 existing 其他 key，改 / 建 customApiKeyResponses
+        car = existing.get("customApiKeyResponses")
+        if not isinstance(car, dict):
+            car = {}
+        approved = car.get("approved")
+        if not isinstance(approved, list):
+            approved = []
+        if tail not in approved:
+            approved.append(tail)
+        car["approved"] = approved
+        # rejected 数组保留为 []，让 Claude Code 默认不要再弹确认窗（用户已批准）
+        if not isinstance(car.get("rejected"), list):
+            car["rejected"] = []
+        existing["customApiKeyResponses"] = car
+        # 原子写回
+        tmp = claude_json + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(existing, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, claude_json)
+        try:
+            os.chown(claude_json, 1000, 1000)
+        except (PermissionError, OSError):
+            pass
+    except Exception as e:
+        app.logger.warning(f"_enforce_custom_api_key_responses: {user_dir} failed: {e}")
+
+
 def _chown_recursive(path: str, uid: int, gid: int) -> None:
     """递归 chown 到指定 uid/gid。chown 失败仅记录，不阻断（rootful container 才有权限）。"""
     for root, dirs, files in os.walk(path):
@@ -713,6 +791,9 @@ def start_container(user_id: str, base_url: str, api_key: str,
     if not client:
         raise RuntimeError("docker unavailable")
     user_dir = ensure_user_dir(user_id)
+    # 把 apiKey 尾段加进 ~/.claude.json 的 customApiKeyResponses.approved，
+    # 让 Claude Code 启动时不再弹"自定义 API key 风险确认"窗
+    _enforce_custom_api_key_responses(user_dir, api_key)
     host_user_dir = host_user_dir_for(user_id)  # docker.run() bind source 用 host 视角
     # scratch 目录必须存在才能 bind mount（bind source 不存在 → 容器内是空目录但首次写会失败）
     # chown 给 1000:1000 + chmod 1777（sticky bit）：每个文件只能被创建者删除
@@ -1152,7 +1233,13 @@ def api_portal_logout():
 
 @app.route("/")
 def index():
-    return render_template("login.html")
+    return render_template(
+        "login.html",
+        default_base_url=DEFAULT_BASE_URL,
+        default_opus_model=DEFAULT_OPUS_MODEL,
+        default_sonnet_model=DEFAULT_SONNET_MODEL,
+        default_haiku_model=DEFAULT_HAIKU_MODEL,
+    )
 
 
 @app.route("/api/start", methods=["POST"])
