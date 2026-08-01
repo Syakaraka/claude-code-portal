@@ -301,6 +301,54 @@ PORTAL_PASSWORD=
 FLASK_SECRET=$(python3 -c "import secrets; print(secrets.token_urlsafe(48))")
 ```
 
+### Step 4.5：准备 volumes/node/ 模板目录（首次部署必做）
+
+> **为什么**：portal 启动新用户容器时，会把 `volumes/node/` 整个 copytree 到
+> `volumes/users/<uid>/` —— 它是每个用户 home 的种子：code-server settings.json、
+> Claude Code 的 `.claude/`、扩展推荐等都在这里。
+>
+> **坑**：`/volumes/` 在 `.gitignore` 里（运行时数据不入库），所以 git clone 不会带它。
+> 不手动创建的话，首次部署下来新用户会"功能残缺"——典型表现：code-server 进入
+> Restricted Mode，anthropic.claude-code 扩展 publisher 被认为 untrusted 不能激活，
+> UI 永远英文。
+>
+> 兜底：portal 的 `_enforce_required_cs_settings()` 在 `ensure_user_dir` 末尾会
+> 把 trust key + 4 条 AI 禁用 setting 合并进每个用户 home（即使模板缺失也保证
+> "能用"）。但模板本身仍应该建好，作为初始一致状态的来源 + 迁移复制的对象。
+
+**必须创建的文件**（最少集）：
+
+```bash
+mkdir -p volumes/node/.local/share/code-server/User
+
+cat > volumes/node/.local/share/code-server/User/settings.json <<'EOF'
+{
+    "security.workspace.trust.enabled": false,
+    "extensions.supportUntrustedWorkspaces": {
+        "anthropic.claude-code": true,
+        "ms-ceintl.vscode-language-pack-zh-hans": true
+    },
+    "extensions.autoUpdate": false,
+    "chat.disableAIFeatures": true,
+    "github.copilot.enable": { "*": false },
+    "github.copilot.chat.enabled": false,
+    "inlineSuggest.enabled": false
+}
+EOF
+```
+
+**可选的补充文件**（entrypoint.sh / portal 会兜底写，缺也不致命）：
+
+- `volumes/node/.claude/settings.json`：Claude Code 的环境变量 / hooks 配置。
+  **警告：不要从你本机 dev home 直接 `cp -r ~/.claude/` 过来**——dev 的
+  `ANTHROPIC_API_KEY` 会一起被复制走，所有用户共用你的 key。正确做法：手写一份
+  （参考 ARCHITECTURE.md §11）。
+- `volumes/node/.claude.json`：Claude Code 的全局状态。可选。
+- `languagepacks.json` / `argv.json`：entrypoint.sh 在容器内首次启动按需写，模板里
+  不用放。
+
+**迁移场景**：如果从旧机器搬过来，tar 包已经带了 `volumes/node/`，本步骤跳过。
+
 ### Step 5：构建两个镜像
 
 ```bash
