@@ -139,6 +139,17 @@ function renderRows(items, meta) {
     };
     rowsEl.querySelectorAll(".trow.expanded").forEach(r => expanded.delete.add(r.dataset.uid));
     rowsEl.querySelectorAll(".trow.expanded-rebuild").forEach(r => expanded.rebuild.add(r.dataset.uid));
+    // 记住展开面板里所有 checkbox 的勾选状态（renderRows 重写 innerHTML 会清掉 checked，
+    // 不补这一手的话 admin 正在勾的选项 5s 后会被无声重置——和"勾选自动取消"同源问题，
+    // 上一次 commit 3188b98 只补了展开 class，没补 checkbox 状态）
+    const checkboxState = new Map();  // uid -> { optName: bool, ... }
+    rowsEl.querySelectorAll(".trow.expanded, .trow.expanded-rebuild").forEach(r => {
+        const state = {};
+        r.querySelectorAll('input[type="checkbox"][data-opt]').forEach(cb => {
+            state[cb.dataset.opt] = cb.checked;
+        });
+        checkboxState.set(r.dataset.uid, state);
+    });
     if (!items.length) {
         rowsEl.innerHTML = `
             <div class="empty">
@@ -156,6 +167,15 @@ function renderRows(items, meta) {
     for (const uid of expanded.rebuild) {
         const row = rowsEl.querySelector(`.trow[data-uid="${CSS.escape(uid)}"]`);
         if (row) row.classList.add("expanded-rebuild");
+    }
+    // 恢复 checkbox 勾选状态（见上面 checkboxState 收集处的注释）
+    for (const [uid, state] of checkboxState) {
+        const row = rowsEl.querySelector(`.trow[data-uid="${CSS.escape(uid)}"]`);
+        if (!row) continue;
+        for (const [opt, checked] of Object.entries(state)) {
+            const cb = row.querySelector(`input[type="checkbox"][data-opt="${CSS.escape(opt)}"]`);
+            if (cb) cb.checked = checked;
+        }
     }
 
     rowsEl.querySelectorAll("[data-action]").forEach(btn => {
