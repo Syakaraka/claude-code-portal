@@ -387,12 +387,29 @@ def ensure_user_dir(user_id: str, wipe: bool = False) -> str:
     #   - 老用户 home 已有 settings.json 但不含这些 key → 自动补
     #   - 模板文件被改 / 缺失 → 仍然写
     #   - 用户手动清掉 settings.json → 启动时自动恢复
-    _enforce_ai_disabled_settings(path)
+    _enforce_required_cs_settings(path)
     return path
 
 
-# AI 禁用 setting 的目标值。集中在一处方便以后调整（比如想放开 inline suggest 就删一条）
-_AI_DISABLED_SETTINGS = {
+# code-server User/settings.json 强制注入的 setting 目标值。集中在一处方便以后调整
+# （比如想放开 inline suggest 就删一条；想强制 trust 开就改这里）
+# 覆盖两层防御：
+#   - ensure_user_dir / sync_template_to_user 末尾的 _enforce_required_cs_settings
+#     （运行时 merge 进每个用户 home，覆盖模板缺失 / 老用户 home 残缺 / 用户手动清空）
+#   - volumes/node/.local/share/code-server/User/settings.json 模板本身
+#     （新用户 copytree 时的种子文件，缺 key 时 portal 兜底补齐）
+_REQUIRED_CS_SETTINGS = {
+    # 禁用 workspace trust（避免默认 Restricted Mode 把扩展功能阉割，
+    # 导致 anthropic.claude-code publisher untrusted 不能激活、UI 永远英文）
+    "security.workspace.trust.enabled": False,
+    # 预信任关键 publisher（即使 trust 漏了也兜底让这两个扩展能激活）
+    "extensions.supportUntrustedWorkspaces": {
+        "anthropic.claude-code": True,
+        "ms-ceintl.vscode-language-pack-zh-hans": True,
+    },
+    # 关闭扩展自动更新（内网环境不该有任何外发）
+    "extensions.autoUpdate": False,
+    # 4 条 AI 禁用 key（一键禁用 VS Code 内置 Chat / Copilot / 内联补全）
     "chat.disableAIFeatures": True,
     "github.copilot.enable": {"*": False},
     "github.copilot.chat.enabled": False,
@@ -402,17 +419,22 @@ _AI_DISABLED_SETTINGS = {
 _CS_SETTINGS_RELPATH = ".local/share/code-server/User/settings.json"
 
 
-def _enforce_ai_disabled_settings(user_dir: str) -> None:
-    """把 4 个 AI 禁用 key 合并进 user_dir/.local/share/code-server/User/settings.json。
+def _enforce_required_cs_settings(user_dir: str) -> None:
+    """把 _REQUIRED_CS_SETTINGS 合并进 user_dir/.local/share/code-server/User/settings.json。
 
     行为：
       - 路径不存在 → 创建空 {}，再合并目标值（相当于"无中生有"补一份）
       - 路径存在但解析失败（不是合法 JSON）→ 留个 WARN 日志，不动原文件（避免误清空
         用户手动写的内容），返回
-      - 路径存在且合法 → 用现有对象做底，update 目标 4 条 key 后原子写回（写临时文件
+      - 路径存在且合法 → 用现有对象做底，update 目标 key 后原子写回（写临时文件
         + os.replace，避免半写状态被 claude 容器读到）
 
     幂等：调用 N 次效果同调用 1 次。失败仅 WARN，不阻断 ensure_user_dir。
+
+    与 sync_template_to_user 内 _merge_cs_user_settings 的区别：本函数强制注入
+    _REQUIRED_CS_SETTINGS 全部 key（用户改不动），sync 的 merge 允许用户保留
+    自己额外加的 key 但对 _REQUIRED_CS_SETTINGS 范围内的 key 还是会被模板值覆盖
+    （portal 始终代表"我们想让用户有的状态"）。
     """
     cs_settings = os.path.join(user_dir, _CS_SETTINGS_RELPATH)
     try:
@@ -423,20 +445,20 @@ def _enforce_ai_disabled_settings(user_dir: str) -> None:
                     existing = json.load(f)
                 if not isinstance(existing, dict):
                     app.logger.warning(
-                        f"_enforce_ai_disabled_settings: {cs_settings} root is "
+                        f"_enforce_required_cs_settings: {cs_settings} root is "
                         f"{type(existing).__name__}, not object; skipping merge"
                     )
                     return
             except json.JSONDecodeError as e:
                 app.logger.warning(
-                    f"_enforce_ai_disabled_settings: {cs_settings} JSON parse failed "
+                    f"_enforce_required_cs_settings: {cs_settings} JSON parse failed "
                     f"({e}); leaving untouched"
                 )
                 return
         else:
             os.makedirs(os.path.dirname(cs_settings), exist_ok=True)
-        # merge：现有 key 全保留，只覆盖/补齐我们要的 4 条
-        existing.update(_AI_DISABLED_SETTINGS)
+        # merge：现有 key 全保留，只覆盖/补齐我们要的 key
+        existing.update(_REQUIRED_CS_SETTINGS)
         # 原子写：先写临时文件再 rename，避免并发读到半写
         tmp = cs_settings + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -449,13 +471,81 @@ def _enforce_ai_disabled_settings(user_dir: str) -> None:
         except (PermissionError, OSError):
             pass
     except Exception as e:
-        app.logger.warning(f"_enforce_ai_disabled_settings: {user_dir} failed: {e}")
+        app.logger.warning(f"_enforce_required_cs_settings: {user_dir} failed: {e}")
+
+
+def _is_cs_user_settings(rel: str, fname: str) -> bool:
+    """检测是否 code-server 的 User/settings.json（要 merge 不 overwrite）。
+
+    rel 是 USER_TEMPLATE 下文件相对路径（如 ".local/share/code-server/User"）。
+    """
+    return (
+        fname == "settings.json"
+        and rel.replace("\\", "/").endswith("code-server/User")
+    )
+
+
+def _merge_cs_user_settings(template_path: str, user_path: str) -> None:
+    """把模板 code-server User/settings.json merge 进用户已有 settings.json。
+
+    语义：
+      - 用户已有 → 用现有对象做底，update 模板 key（模板赢，但用户其他 key 保留）
+      - 用户没有 → 等同于直接覆盖（新建）
+      - 模板解析失败 → WARN + 不动用户文件
+      - 用户解析失败 → WARN + 把模板当底（用户手动写坏的内容被替换掉，符合预期）
+      - 原子写：临时文件 + os.replace
+
+    与 shutil.copy2 的关键区别：copy2 是二进制覆盖，本函数 merge 后用户额外加的
+    自定义 key（theme / fontSize / workbench.colorTheme 等）保留下来。
+    """
+    try:
+        with open(template_path, "r", encoding="utf-8") as f:
+            template = json.load(f)
+        if not isinstance(template, dict):
+            app.logger.warning(
+                f"_merge_cs_user_settings: {template_path} root is "
+                f"{type(template).__name__}, not object; skipping"
+            )
+            return
+    except (OSError, json.JSONDecodeError) as e:
+        app.logger.warning(
+            f"_merge_cs_user_settings: read template {template_path} failed ({e}); "
+            f"leaving user file untouched"
+        )
+        return
+
+    existing = {}
+    if os.path.exists(user_path):
+        try:
+            with open(user_path, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+            if not isinstance(existing, dict):
+                app.logger.warning(
+                    f"_merge_cs_user_settings: {user_path} root is "
+                    f"{type(existing).__name__}, not object; treating as empty"
+                )
+                existing = {}
+        except json.JSONDecodeError as e:
+            app.logger.warning(
+                f"_merge_cs_user_settings: {user_path} JSON parse failed ({e}); "
+                f"keeping template content only (user's manual edits discarded)"
+            )
+            existing = {}
+
+    existing.update(template)
+    try:
+        tmp = user_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(existing, f, ensure_ascii=False, indent=4)
+        os.replace(tmp, user_path)
+    except OSError as e:
+        app.logger.warning(f"_merge_cs_user_settings: write {user_path} failed: {e}")
 
 
 # customApiKeyResponses.approved 写入到 ~/.claude.json —— Claude Code 启动时如果
 # 检测到当前 ANTHROPIC_API_KEY 已被 approved 过，就跳过"自定义 API key 风险确认"弹窗。
 # approved 的 entry 是 apiKey 的尾段（去掉前缀以避免完整 key 落盘 ~/.claude.json）。
-# 实现：跟 _enforce_ai_disabled_settings 对称——存在则合并并去重，不存在则建空对象，
+# 实现：跟 _enforce_required_cs_settings 对称——存在则合并并去重，不存在则建空对象，
 # 写临时文件 + os.replace 原子替换，失败仅 WARN 不阻断。
 _CLAUDE_JSON_RELPATH = ".claude.json"
 # Claude Code 启动时对 ANTHROPIC_API_KEY 做 trim().slice(-20)，把得到 20 字符的尾段
@@ -582,10 +672,16 @@ def sync_template_to_user(user_id: str) -> int:
             src = os.path.join(root, fname)
             dst = os.path.join(target_dir, fname)
             try:
-                # copy2 保留 mtime / mode / atime —— 模板里文件如果设了特殊权限位（如
-                # scripts 的 +x）会被保留。symlink 会被解析成普通文件（OK，模板里
-                # 不应该放 symlink）
-                shutil.copy2(src, dst)
+                if _is_cs_user_settings(rel, fname):
+                    # code-server User/settings.json 走 merge 语义：
+                    # 保留用户已有 key（theme / fontSize / workbench.colorTheme
+                    # 等），模板 key 覆盖 / 补齐。避免 sync 抹掉用户手动加的配置。
+                    _merge_cs_user_settings(src, dst)
+                else:
+                    # copy2 保留 mtime / mode / atime —— 模板里文件如果设了特殊权限位（如
+                    # scripts 的 +x）会被保留。symlink 会被解析成普通文件（OK，模板里
+                    # 不应该放 symlink）
+                    shutil.copy2(src, dst)
                 copied += 1
             except Exception as e:
                 failed += 1
@@ -596,8 +692,8 @@ def sync_template_to_user(user_id: str) -> int:
     # chown 1000:1000 也是为了让容器内 node 用户对新复制/创建的目录有写权限。
     _chmod_user_dir(user_dir)
     _chown_recursive(user_dir, uid=1000, gid=1000)
-    # 同样兜底注入 AI 禁用 setting（确保同步模板路径下也生效；幂等）
-    _enforce_ai_disabled_settings(user_dir)
+    # 同样兜底注入 _REQUIRED_CS_SETTINGS（确保同步模板路径下也生效；幂等）
+    _enforce_required_cs_settings(user_dir)
 
     app.logger.info(
         f"sync_template_to_user: {user_id[:8]}... copied={copied} failed={failed}"
