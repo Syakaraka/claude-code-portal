@@ -77,6 +77,43 @@ cs_user_dir="$cs_data_dir/User"
 cs_settings="$cs_user_dir/settings.json"
 mkdir -p "$cs_user_dir"
 
+# ====== GC 旧版本扩展目录 ======
+# 为什么：bind mount 让 $cs_data_dir/extensions 跨容器重建持久化。旧版本目录
+# （如 ms-ceintl-1.129.0、anthropic.claude-code-2.1.217）不会随容器销毁，下次重建
+# 时新旧并存：
+#   - ls alphabetic order 让旧版排前面 → entrypoint.sh 的 head -1 选旧版
+#     → languagepacks.json 引用旧路径 → code-server 启动后 mark+删旧版
+#     → languagepacks.json 指向已删除目录 → UI 永远英文
+#   - chmod +x 循环也会对每个残留目录跑一遍（无害但日志重复）
+# 解决：对受管扩展（我们随镜像安装的）保留最新版，删旧版。受管扩展：
+# ms-ceintl.vscode-language-pack-zh-hans、anthropic.claude-code。其他扩展
+# （用户自己装的）不动。GC 必须在 install-extension 之后、languagepacks.json
+# 写之前（这样 zh_ext 的 ls 看到的就是 GC 后干净状态）。
+gc_ext_root="$cs_data_dir/extensions"
+if [ -d "$gc_ext_root" ]; then
+    gc_removed=0
+    for prefix in "ms-ceintl.vscode-language-pack-zh-hans" "anthropic.claude-code"; do
+        # sort -V 是 GNU version sort：理解 1.131.0 > 1.129.0；alphabetic
+        # 会把 1.131.0 排在 1.2.0 之后导致选错。
+        all=$(ls -d "$gc_ext_root/$prefix"-* 2>/dev/null | sort -V)
+        if [ -z "$all" ]; then
+            continue
+        fi
+        keep=$(echo "$all" | tail -1)
+        for d in $all; do
+            if [ "$d" != "$keep" ]; then
+                if rm -rf "$d" 2>/dev/null; then
+                    echo "[entrypoint] gc stale ext: $(basename "$d")"
+                    gc_removed=$((gc_removed + 1))
+                fi
+            fi
+        done
+    done
+    if [ "$gc_removed" -gt 0 ]; then
+        echo "[entrypoint] gc: $gc_removed stale extension dir(s) removed"
+    fi
+fi
+
 # ====== 版本门控的生成配置（argv.json / languagepacks.json）======
 # 这两个文件由 code-server 启动时读取，**格式跟 code-server 版本强绑定**：
 # 老 entrypoint.sh 写的 languagepacks.json 在 code-server 4.131.0+ 上不再被
@@ -164,7 +201,7 @@ fi
 cs_langpacks="$cs_data_dir/languagepacks.json"
 langpacks_ok=false
 if should_regenerate "$cs_langpacks"; then
-    zh_ext=$(ls -d "$cs_data_dir/extensions"/ms-ceintl.vscode-language-pack-zh-hans-* 2>/dev/null | head -1)
+    zh_ext=$(ls -d "$cs_data_dir/extensions"/ms-ceintl.vscode-language-pack-zh-hans-* 2>/dev/null | sort -V | tail -1)
     if [ -n "$zh_ext" ] && [ -f "$zh_ext/translations/main.i18n.json" ] && [ -f "$zh_ext/package.json" ]; then
         # 从 package.json 动态读 version + contributes.localizations[0] 的 label
         zh_version=$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "$zh_ext/package.json" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
