@@ -199,8 +199,21 @@ fi
 # 不只是语言包加载失败，会让整个扩展列表都解析不出来。
 # 版本门控重写：见上面 should_regenerate 的语义（升级 code-server 时强制按新格式重写）
 cs_langpacks="$cs_data_dir/languagepacks.json"
+# 额外校验：即使 should_regenerate 返回 false（marker 版本匹配），如果
+# languagepacks.json 里 zh-cn.translations.vscode 引用的扩展目录已被 GC 删掉
+# （典型场景：旧 entrypoint.sh 用 alphabetic head -1 选了 1.129.0 → 启动后
+# code-server mark+删 1.129.0 → languagepacks.json 引用空路径），也要强制重写。
+# argv.json 没有路径引用，不存在这个 fragility，不需要类似校验。
+force_langpacks_regen=false
+if ! should_regenerate "$cs_langpacks" && [ -f "$cs_langpacks" ]; then
+    ref_path=$(grep -oE '"vscode"[[:space:]]*:[[:space:]]*"[^"]+"' "$cs_langpacks" 2>/dev/null | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    if [ -z "$ref_path" ] || [ ! -f "$ref_path" ]; then
+        force_langpacks_regen=true
+        echo "[entrypoint] $cs_langpacks references missing path (${ref_path:-<empty>}), forcing regen"
+    fi
+fi
 langpacks_ok=false
-if should_regenerate "$cs_langpacks"; then
+if should_regenerate "$cs_langpacks" || [ "$force_langpacks_regen" = "true" ]; then
     zh_ext=$(ls -d "$cs_data_dir/extensions"/ms-ceintl.vscode-language-pack-zh-hans-* 2>/dev/null | sort -V | tail -1)
     if [ -n "$zh_ext" ] && [ -f "$zh_ext/translations/main.i18n.json" ] && [ -f "$zh_ext/package.json" ]; then
         # 从 package.json 动态读 version + contributes.localizations[0] 的 label
